@@ -32,27 +32,13 @@ mongoose.connect(process.env.MONGO_URI)
 const profileSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     name: String,
-    fatherName: String,
-    title: String,
+    phone: String,
     age: Number,
-    gender: String,
     city: String,
     caste: String,
-    sect: String,
-    religion: String,
-    height: String,
-    weight: String,
-    maritalStatus: String,
+    about: String,
     education: String,
     profession: String,
-    monthlyIncome: String,
-    motherTongue: String,
-    houseType: String,
-    houseSize: String,
-    disability: String,
-    requirements: String,
-    about: String,
-    familyDetails: String,
     mainImage: String,
     gallery: [String],
     createdAt: { type: Date, default: Date.now }
@@ -64,6 +50,12 @@ const userSchema = new mongoose.Schema({
     phone: { type: String, unique: true, required: true },
     password: { type: String, required: true },
     package: { type: String, required: true },
+    age: Number,
+    city: String,
+    caste: String,
+    about: String,
+    education: String,
+    profession: String,
     viewLimit: { type: Number, default: 0 },
     viewedProfiles: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Profile' }],
     isApproved: { type: Boolean, default: false },
@@ -154,33 +146,56 @@ app.post('/api/users/login', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// 4. GET USER MATCHES (FIXED: Added this route for matches page)
+// 4. GET USER MATCHES (Yeh woh rasta hai jo frontend ko chahiye)
 app.get('/api/users/matches', authMiddleware, async (req, res) => {
     try {
-        const profiles = await Profile.find().sort({ createdAt: -1 });
-        res.json(profiles);
+        const user = await User.findById(req.user.userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
+        const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
+
+        const updatedProfiles = profiles.map(profile => {
+            const isUnlocked = user.viewedProfiles.some(id => id.toString() === profile._id.toString());
+            return {
+                ...profile,
+                images: profile.gallery || [],
+                isLocked: !isUnlocked,
+                phone: isUnlocked ? profile.phone : "Locked"
+            };
+        });
+
+        res.json({
+            success: true,
+            profiles: updatedProfiles,
+            credits: user.viewLimit
+        });
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
 });
 
-// 5. UNLOCK PROFILE (FIXED: Added this for contact unlock)
+// 5. UNLOCK PROFILE
 app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
     try {
         const { profileId } = req.body;
         const user = await User.findById(req.user.userId);
         if (!user) return res.status(404).json({ message: "User not found" });
 
-        if (user.viewLimit <= 0) return res.status(403).json({ message: "Limit exhausted!" });
-
-        if (!user.viewedProfiles.includes(profileId)) {
-            user.viewLimit -= 1;
-            user.viewedProfiles.push(profileId);
-            await user.save();
+        if (user.viewedProfiles.some(id => id.toString() === profileId)) {
+            return res.json({ success: true, message: "Already unlocked", credits: user.viewLimit });
         }
-        res.json({ success: true, viewLimit: user.viewLimit });
+
+        if (user.viewLimit <= 0) {
+            return res.status(403).json({ success: false, message: "Aapke credits khatam ho chuke hain!" });
+        }
+
+        user.viewLimit -= 1;
+        user.viewedProfiles.push(profileId);
+        await user.save();
+
+        res.json({ success: true, message: "Profile Unlocked!", credits: user.viewLimit });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/* ================= ADMIN MANAGEMENT ROUTES ================= */
+/* ================= ADMIN ROUTES ================= */
 app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
     try {
         const users = await User.find().sort({ createdAt: -1 });
@@ -193,21 +208,28 @@ app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
         const user = await User.findById(req.params.userId);
         if (!user) return res.status(404).json({ message: "User not found" });
 
+        // Check if profile already exists
+        const existingProfile = await Profile.findOne({ userId: user._id });
+        if (existingProfile) return res.json({ success: true, message: "User already approved." });
+
         const newProfile = new Profile({
             userId: user._id,
             name: user.name,
+            phone: user.phone,
             age: user.age,
             city: user.city,
             caste: user.caste,
+            about: user.about || "",
+            education: user.education || "",
+            profession: user.profession || "",
             mainImage: user.images[0] || "",
             gallery: user.images,
-            title: `New Rishta - ${user.city}`
         });
 
         await newProfile.save();
         user.isApproved = true;
         await user.save();
-        res.json({ success: true, message: "Approved!" });
+        res.json({ success: true, message: "User Approved Successfully!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -216,8 +238,5 @@ app.delete('/api/admin/registration/:id', authMiddleware, async (req, res) => {
     catch (err) { res.status(500).json({ error: "Delete failed" }); }
 });
 
-/* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`✅ Server live on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Server live on port ${PORT}`));
