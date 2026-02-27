@@ -38,6 +38,6 @@ router.get('/pending', authMiddleware, isAdmin, userController.getPendingRegistr
 
 // User ko approve karna (Sirf Admin)
 router.put('/approve/:id', authMiddleware, isAdmin, userController.approveUser);
-
-
+// User routes file mein
+router.get('/view/:id', authMiddleware, userController.getSingleProfile);
 module.exports = router;
