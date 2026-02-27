@@ -55,11 +55,10 @@ exports.approveUser = async (req, res) => {
         let views = 0;
         let monthsToAdd = 1;
 
-        // Package based credit assignment
         if (user.package === 'Basic Plan') { views = 3; monthsToAdd = 1; }
         else if (user.package === 'Gold Plan') { views = 10; monthsToAdd = 3; }
         else if (user.package === 'Diamond Plan') { views = 999; monthsToAdd = 12; }
-        else { views = 0; monthsToAdd = 1; } // Standard/Default
+        else { views = 0; monthsToAdd = 1; }
 
         const expiry = new Date();
         expiry.setMonth(expiry.getMonth() + monthsToAdd);
@@ -159,7 +158,7 @@ exports.loginUser = async (req, res) => {
 };
 
 // ==========================================
-// 5. UNLOCK PROFILE (Deduct Credits)
+// 5. UNLOCK PROFILE
 // ==========================================
 exports.unlockProfile = async (req, res) => {
     try {
@@ -168,23 +167,19 @@ exports.unlockProfile = async (req, res) => {
 
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-        // Check if already unlocked
         if (user.unlockedProfiles.includes(profileId)) {
             return res.status(200).json({ success: true, message: "Already unlocked", credits: user.credits });
         }
 
-        // Check Expiry
         if (user.packageExpiry && new Date() > new Date(user.packageExpiry)) {
             return res.status(403).json({ success: false, message: "Package expired!" });
         }
 
-        // Check Credits (Diamond gets free pass)
         const isDiamond = user.package === 'Diamond Plan';
         if (!isDiamond && user.credits <= 0) {
             return res.status(403).json({ success: false, message: "No credits left! Please upgrade." });
         }
 
-        // Processing Unlock
         user.unlockedProfiles.push(profileId);
         if (!isDiamond) {
             user.credits -= 1;
@@ -199,60 +194,65 @@ exports.unlockProfile = async (req, res) => {
 };
 
 // ==========================================
-// 6. GET AVAILABLE MATCHES (Gender & Privacy Fix)
+// 6. GET AVAILABLE MATCHES (Public & Gender Logic)
 // ==========================================
 exports.getAvailableMatches = async (req, res) => {
     try {
-        const loggedInUser = await User.findById(req.user.id);
+        // Find Logged In User (If token exists)
+        const loggedInUser = req.user ? await User.findById(req.user.id) : null;
 
-        if (!loggedInUser) return res.status(404).json({ success: false, message: "User not found" });
-
-        // Logic for Non-Approved Users
-        if (loggedInUser.role !== 'admin' && !loggedInUser.isApproved) {
-            return res.status(200).json({
-                success: true,
-                profiles: [],
-                credits: 0,
-                message: "Pending approval"
-            });
-        }
-
-        // GENDER FILTER: Male ko Female, Female ko Male dikhao
+        // Base Query
         let query = {
             isApproved: true,
-            _id: { $ne: req.user.id },
             role: 'user'
         };
 
-        if (loggedInUser.role !== 'admin') {
-            const targetGender = loggedInUser.gender === 'Male' ? 'Female' : 'Male';
-            query.gender = targetGender;
+        // 1. LOGIC FOR AUTHENTICATED USER
+        if (loggedInUser) {
+            // Admin gets everything, User gets opposite gender
+            if (loggedInUser.role !== 'admin') {
+                const targetGender = loggedInUser.gender === 'Male' ? 'Female' : 'Male';
+                query.gender = targetGender;
+                query._id = { $ne: loggedInUser._id };
+            }
         }
+        // 2. LOGIC FOR PUBLIC VIEW (LOGOUT)
+        // No gender filter here - show all as per your request
 
         let rawProfiles = await User.find(query).select('-password').sort({ createdAt: -1 });
 
         const filteredProfiles = rawProfiles.map(profile => {
             const p = profile.toObject();
-            const isUnlocked = loggedInUser.unlockedProfiles.includes(profile._id.toString());
-            const isDiamond = loggedInUser.package === 'Diamond Plan';
 
-            // Privacy Logic: Agar Admin hai ya Diamond hai ya Unlock kar liya hai
-            if (loggedInUser.role === 'admin' || isDiamond || isUnlocked) {
-                p.isLocked = false;
-            } else {
-                // Hide sensitive info for locked profiles
+            let isLocked = true;
+
+            if (loggedInUser) {
+                const isUnlocked = loggedInUser.unlockedProfiles.includes(profile._id.toString());
+                const isDiamond = loggedInUser.package === 'Diamond Plan';
+
+                if (loggedInUser.role === 'admin' || isDiamond || isUnlocked) {
+                    isLocked = false;
+                }
+            }
+
+            // Privacy: Lockdown data if not unlocked or not logged in
+            if (isLocked) {
                 delete p.phone;
                 delete p.familyDetails;
                 delete p.paymentScreenshot;
                 p.isLocked = true;
+            } else {
+                p.isLocked = false;
             }
+
             return p;
         });
 
         res.status(200).json({
             success: true,
             profiles: filteredProfiles,
-            credits: loggedInUser.credits
+            credits: loggedInUser ? loggedInUser.credits : 0,
+            isLoggedIn: !!loggedInUser
         });
 
     } catch (error) {
@@ -267,7 +267,6 @@ exports.getAvailableMatches = async (req, res) => {
 exports.getSingleProfile = async (req, res) => {
     try {
         const { id } = req.params;
-        // Profile model se fetch ho raha hai detailed view ke liye
         const profile = await Profile.findById(id).populate('userId', 'isPremium package');
         if (!profile) return res.status(404).json({ success: false, message: "Profile not found" });
 
