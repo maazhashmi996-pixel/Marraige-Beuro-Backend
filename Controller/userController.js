@@ -4,7 +4,81 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 // ==========================================
-// 1. REGISTER USER
+// 1. ADMIN: CREATE MANUAL PROFILE (FULL UPDATED)
+// ==========================================
+exports.createManualProfile = async (req, res) => {
+    try {
+        const userData = req.body;
+
+        // 1. Check if email already exists
+        const existingUser = await User.findOne({ email: userData.email });
+        if (existingUser) {
+            return res.status(400).json({ success: false, message: "Email already registered" });
+        }
+
+        // 2. Handle Images
+        const images = req.files && req.files['images'] ? req.files['images'].map(file => file.path) : [];
+
+        // 3. Hash Password (Jo humne form se bheja)
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(userData.password || "123456", salt); // Default pass if missing
+
+        // 4. Save User Account
+        const newUser = new User({
+            ...userData,
+            password: hashedPassword,
+            images: images,
+            mainImage: images.length > 0 ? images[0] : null,
+            isApproved: true, // Admin khud bana raha hai to auto-approve
+            package: userData.package || 'Basic Plan',
+            credits: 5, // Give some default credits
+            role: 'user'
+        });
+
+        const savedUser = await newUser.save();
+
+        // 5. Create Profile Entry (Taake search matches mein nazar aaye)
+        const newProfile = new Profile({
+            userId: savedUser._id,
+            name: savedUser.name,
+            fatherName: savedUser.fatherName,
+            title: userData.title || `${savedUser.caste || 'New'} Rishta`,
+            age: savedUser.age,
+            gender: savedUser.gender,
+            city: savedUser.city,
+            caste: savedUser.caste,
+            sect: savedUser.sect,
+            religion: savedUser.religion,
+            height: savedUser.height,
+            weight: savedUser.weight,
+            maritalStatus: savedUser.maritalStatus,
+            education: savedUser.education,
+            profession: savedUser.occupation || savedUser.profession,
+            monthlyIncome: savedUser.monthlyIncome,
+            motherTongue: savedUser.motherTongue,
+            about: savedUser.about,
+            requirements: savedUser.requirements,
+            familyDetails: savedUser.familyDetails,
+            mainImage: savedUser.mainImage,
+            gallery: savedUser.images
+        });
+
+        await newProfile.save();
+
+        res.status(201).json({
+            success: true,
+            message: "User Account & Profile Created Successfully!",
+            user: savedUser
+        });
+
+    } catch (error) {
+        console.error("Manual Create Error:", error);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ==========================================
+// 2. REGISTER USER (Self Registration)
 // ==========================================
 exports.registerUser = async (req, res) => {
     try {
@@ -14,23 +88,21 @@ exports.registerUser = async (req, res) => {
             return res.status(400).json({ success: false, message: "Email already registered" });
         }
 
-        const images = req.files['images'] ? req.files['images'].map(file => file.path) : [];
-        const screenshot = req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].path : null;
+        const images = req.files && req.files['images'] ? req.files['images'].map(file => file.path) : [];
+        const screenshot = req.files && req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].path : null;
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(userData.password, salt);
 
         const newUser = new User({
             ...userData,
-            income: userData.monthlyIncome || userData.income,
             password: hashedPassword,
             images: images,
             mainImage: images.length > 0 ? images[0] : null,
             paymentScreenshot: screenshot,
             isApproved: false,
             credits: 0,
-            unlockedProfiles: [],
-            viewedCount: 0
+            unlockedProfiles: []
         });
 
         await newUser.save();
@@ -42,7 +114,7 @@ exports.registerUser = async (req, res) => {
 };
 
 // ==========================================
-// 2. APPROVE USER (Admin Action)
+// 3. APPROVE USER
 // ==========================================
 exports.approveUser = async (req, res) => {
     try {
@@ -58,7 +130,7 @@ exports.approveUser = async (req, res) => {
         if (user.package === 'Basic Plan') { views = 3; monthsToAdd = 1; }
         else if (user.package === 'Gold Plan') { views = 10; monthsToAdd = 3; }
         else if (user.package === 'Diamond Plan') { views = 999; monthsToAdd = 12; }
-        else { views = 0; monthsToAdd = 1; }
+        else { views = 5; monthsToAdd = 1; }
 
         const expiry = new Date();
         expiry.setMonth(expiry.getMonth() + monthsToAdd);
@@ -66,7 +138,6 @@ exports.approveUser = async (req, res) => {
         user.credits = views;
         user.packageExpiry = expiry;
         user.isApproved = true;
-        user.isPremium = ['Gold Plan', 'Diamond Plan'].includes(user.package);
 
         const mainImg = user.mainImage || (user.images.length > 0 ? user.images[0] : "");
 
@@ -81,17 +152,13 @@ exports.approveUser = async (req, res) => {
             caste: user.caste,
             sect: user.sect,
             religion: user.religion,
-            nationality: user.nationality,
             height: user.height,
             weight: user.weight,
             maritalStatus: user.maritalStatus,
             education: user.education,
             profession: user.occupation || user.profession,
-            monthlyIncome: user.income,
+            monthlyIncome: user.monthlyIncome || user.income,
             motherTongue: user.motherTongue,
-            disability: user.disability,
-            houseType: user.houseType,
-            houseSize: user.houseSize,
             requirements: user.requirements,
             about: user.about,
             familyDetails: user.familyDetails,
@@ -102,7 +169,7 @@ exports.approveUser = async (req, res) => {
         await newProfile.save();
         await user.save();
 
-        res.status(200).json({ success: true, message: "Approved!", limits: { credits: views, expiry } });
+        res.status(200).json({ success: true, message: "Approved!" });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }

@@ -2,11 +2,12 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const path = require('path');
+const bcrypt = require('bcryptjs'); // <--- Password hashing ke liye
 const User = require('../models/User');
 const Profile = require('../models/Profile');
 const authMiddleware = require('../middleware/authMiddleware');
 
-/* ================= MULTER STORAGE CONFIGURATION (Unchanged) ================= */
+/* ================= MULTER STORAGE CONFIGURATION ================= */
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, 'uploads/');
@@ -52,26 +53,23 @@ router.get('/profiles', authMiddleware, async (req, res) => {
     }
 });
 
-// 3. APPROVE USER (Updated with Package & Limits Logic)
+// 3. APPROVE USER (Unchanged)
 router.put('/approve/:id', authMiddleware, async (req, res) => {
     try {
-        const { packageType } = req.body; // Frontend se 'Basic', 'Gold', ya 'Diamond' aayega
+        const { packageType } = req.body;
         const user = await User.findById(req.params.id);
 
         if (!user) return res.status(404).json({ message: "User nahi mila" });
         if (user.isApproved) return res.status(400).json({ message: "User pehle se approved hai" });
 
-        // Tier-Based Logic
         let limit = 0;
         if (packageType === 'Basic') limit = 3;
         else if (packageType === 'Gold') limit = 10;
-        else if (packageType === 'Diamond') limit = 1000; // Unlimited as 1000
+        else if (packageType === 'Diamond') limit = 1000;
 
-        // 3 Months Validity Calculation
         const expiry = new Date();
         expiry.setMonth(expiry.getMonth() + 3);
 
-        // Sync Data to Profile Table (Aapka purana logic)
         const mainImg = user.images && user.images.length > 0 ? user.images[0] : "";
         const galleryImgs = user.images && user.images.length > 0 ? user.images : [];
 
@@ -106,65 +104,74 @@ router.put('/approve/:id', authMiddleware, async (req, res) => {
 
         await newProfile.save();
 
-        // --- UPDATE USER MODEL WITH TIER INFO ---
         user.isApproved = true;
-        user.packageType = packageType || 'Basic'; // Default Basic agar bhool jayein
+        user.packageType = packageType || 'Basic';
         user.viewLimit = limit;
         user.viewedCount = 0;
         user.expiryDate = expiry;
-        user.unlockedProfiles = []; // Shuru mein empty array
+        user.unlockedProfiles = [];
 
         await user.save();
 
-        res.json({
-            success: true,
-            message: `User Approved as ${packageType}! Profile is now live.`,
-            profile: newProfile
-        });
+        res.json({ success: true, message: `User Approved as ${packageType}!`, profile: newProfile });
     } catch (err) {
-        console.error("Approval Error:", err);
         res.status(500).json({ message: "Approval process mein masla aaya", error: err.message });
     }
 });
 
-// 4. Create Public Profile Manual (Unchanged)
+// 4. CREATE PROFILE & USER ACCOUNT (FULL UPDATED)
 router.post('/create-profile', authMiddleware, upload.array('images', 5), async (req, res) => {
     try {
+        const { email, password, name, phone } = req.body;
+
+        // 1. Check if Email already exists in User table
+        const existingUser = await User.findOne({ email });
+        if (existingUser) {
+            return res.status(400).json({ message: "Ye Email pehle se registered hai." });
+        }
+
+        // 2. Hash Password
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password || "123456", salt);
+
+        // 3. Handle Images
         const files = req.files;
         const baseUrl = `${req.protocol}://${req.get('host')}`;
         const imageUrls = files.map(file => `${baseUrl}/uploads/${file.filename}`);
 
+        // 4. Create User Account (Taake login ho sakay)
+        const newUser = new User({
+            ...req.body,
+            password: hashedPassword,
+            images: imageUrls,
+            isApproved: true, // Manual create hai to auto-approved
+            packageType: 'Basic',
+            viewLimit: 5,
+            expiryDate: new Date(new Date().setMonth(new Date().getMonth() + 3))
+        });
+        const savedUser = await newUser.save();
+
+        // 5. Create Public Profile
         const newProfile = new Profile({
-            name: req.body.name,
-            fatherName: req.body.fatherName,
-            title: req.body.title,
-            age: req.body.age,
-            gender: req.body.gender,
-            city: req.body.city,
-            caste: req.body.caste,
-            sect: req.body.sect,
-            religion: req.body.religion,
-            nationality: req.body.nationality || "Pakistani",
-            height: req.body.height,
-            weight: req.body.weight,
-            education: req.body.education,
-            profession: req.body.profession,
-            monthlyIncome: req.body.monthlyIncome,
-            maritalStatus: req.body.maritalStatus,
-            motherTongue: req.body.motherTongue,
-            houseType: req.body.houseType,
-            houseSize: req.body.houseSize,
-            requirements: req.body.requirements,
-            about: req.body.about || req.body.description,
-            familyDetails: req.body.familyDetails,
+            userId: savedUser._id,
+            ...req.body,
             mainImage: imageUrls[0] || "",
-            gallery: imageUrls
+            gallery: imageUrls,
+            nationality: req.body.nationality || "Pakistani",
+            profession: req.body.occupation || req.body.profession // Dono handle kar liye
         });
 
         await newProfile.save();
-        res.json({ success: true, message: "Profile Created Successfully", profile: newProfile });
+
+        res.json({
+            success: true,
+            message: "User Account & Profile Created Successfully!",
+            profile: newProfile
+        });
+
     } catch (err) {
-        res.status(400).json({ message: "Data save nahi ho saka" });
+        console.error("Create Error:", err);
+        res.status(500).json({ message: "Account create nahi ho saka", error: err.message });
     }
 });
 
