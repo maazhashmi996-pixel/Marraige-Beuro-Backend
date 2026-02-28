@@ -19,7 +19,11 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 
 // CORS Configuration (Production mein origin ko apni domain par set karein)
-const allowedOrigins = [process.env.FRONTEND_URL, 'http://localhost:3000'];
+const allowedOrigins = [process.env.FRONTEND_URL,
+    'http://localhost:3000',
+    'https://www.assanrishta.com',
+    'https://assanrishta.com'
+];
 app.use(cors({
     origin: (origin, callback) => {
         if (!origin || allowedOrigins.includes(origin)) {
