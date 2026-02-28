@@ -7,31 +7,54 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const helmet = require('helmet'); // Security headers
+const compression = require('compression'); // Speed optimization
 
 dotenv.config();
 const app = express();
 
-/* ================= MIDDLEWARES ================= */
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE'], allowedHeaders: ['Content-Type', 'Authorization'] }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+/* ================= PRODUCTION MIDDLEWARES ================= */
+// Helmet security (crossOriginResourcePolicy: false takay images load hon)
+app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(compression());
+
+// CORS Configuration (Production mein origin ko apni domain par set karein)
+const allowedOrigins = [process.env.FRONTEND_URL, 'http://localhost:3000'];
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Static Folder for Uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const dir = './uploads';
-if (!fs.existsSync(dir)) fs.mkdirSync(dir);
+if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
 /* ================= HELPERS ================= */
 const getFullUrl = (req, imgPath) => {
     if (!imgPath || imgPath === "undefined" || imgPath === "null") return "";
     if (imgPath.startsWith('http')) return imgPath;
     const fileName = path.basename(imgPath);
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // Production mein HTTPS check zaroori hai
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const baseUrl = `${protocol}://${req.get('host')}`;
     return `${baseUrl}/uploads/${fileName}`;
 };
 
 /* ================= MONGODB CONNECTION ================= */
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log("✅ MongoDB Connected!"))
+    .then(() => console.log("✅ MongoDB Connected Production Mode!"))
     .catch(err => console.error("❌ DB Connection Error:", err));
 
 /* ================= SCHEMAS ================= */
@@ -44,7 +67,7 @@ const sharedFields = {
 };
 
 const profileSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
     ...sharedFields,
     mainImage: String,
     gallery: [String]
@@ -52,7 +75,7 @@ const profileSchema = new mongoose.Schema({
 
 const userSchema = new mongoose.Schema({
     ...sharedFields,
-    email: { type: String, unique: true, required: true },
+    email: { type: String, unique: true, required: true, index: true },
     password: { type: String, required: true },
     package: { type: String, required: true, default: 'Basic Plan' },
     viewLimit: { type: Number, default: 0 },
@@ -74,14 +97,17 @@ const storage = multer.diskStorage({
         cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
     }
 });
-const upload = multer({ storage: storage });
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
 /* ================= AUTH MIDDLEWARE ================= */
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ success: false, message: "Unauthorized" });
     try {
-        const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET || 'secret');
+        const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
         req.user = decoded;
         next();
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
@@ -92,13 +118,18 @@ const authMiddleware = (req, res, next) => {
 app.post('/api/users/login', async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
         if (!user) return res.status(401).json({ success: false, message: "User not found" });
         if (user.role !== 'admin' && !user.isApproved) return res.status(403).json({ success: false, message: "Account pending approval." });
+
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
 
-        const token = jwt.sign({ userId: user._id, role: user.role }, process.env.JWT_SECRET || 'secret', { expiresIn: '7d' });
+        const token = jwt.sign(
+            { userId: user._id, role: user.role },
+            process.env.JWT_SECRET,
+            { expiresIn: '7d' }
+        );
 
         res.json({
             success: true,
@@ -112,13 +143,13 @@ app.post('/api/users/login', async (req, res) => {
                 gender: user.gender
             }
         });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) { res.status(500).json({ error: "Internal Server Error" }); }
 });
 
 app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
         const { password, email, package: pkg } = req.body;
-        const existingEmail = await User.findOne({ email });
+        const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
         if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
 
         const salt = await bcrypt.genSalt(10);
@@ -130,6 +161,7 @@ app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 },
         const limits = { 'Basic Plan': 3, 'Gold Plan': 10, 'Diamond Plan': 999999 };
         const newUser = new User({
             ...req.body,
+            email: email.toLowerCase().trim(),
             password: hashedPassword,
             viewLimit: limits[pkg] || 3,
             images: userImages,
@@ -145,16 +177,14 @@ app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 },
 
 app.get('/api/users/matches', async (req, res) => {
     try {
-        console.log("\n--- [START] Matches Request ---");
         let currentUser = null;
         const authHeader = req.headers.authorization;
 
         if (authHeader && authHeader.startsWith('Bearer ')) {
             try {
-                const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET || 'secret');
+                const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
                 currentUser = await User.findById(decoded.userId);
-                if (currentUser) console.log(`- Logged in User: ${currentUser.name} (${currentUser.gender})`);
-            } catch (e) { console.log("- Token error"); }
+            } catch (e) { }
         }
 
         let query = {};
@@ -202,45 +232,30 @@ app.get('/api/users/matches', async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Fetch Error:", err);
         res.status(500).json({ success: false, error: "Fetch Error" });
     }
 });
 
-/* 🔥 NEW ROUTE: UNLOCK PROFILE */
 app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
     try {
         const { profileId } = req.body;
         const user = await User.findById(req.user.userId);
-
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
-        // Check if already unlocked
         if (user.viewedProfiles.includes(profileId)) {
             return res.json({ success: true, message: "Already unlocked" });
         }
 
-        // Check Credits
         if (user.package !== 'Diamond Plan' && user.viewLimit <= 0) {
-            return res.status(400).json({ success: false, message: "No credits left. Please upgrade your plan." });
+            return res.status(400).json({ success: false, message: "No credits left." });
         }
 
-        // Deduct Credit (except Diamond) and add to list
-        if (user.package !== 'Diamond Plan') {
-            user.viewLimit -= 1;
-        }
+        if (user.package !== 'Diamond Plan') user.viewLimit -= 1;
         user.viewedProfiles.push(profileId);
         await user.save();
 
-        res.json({
-            success: true,
-            message: "Profile unlocked!",
-            remainingCredits: user.viewLimit
-        });
-
-    } catch (err) {
-        res.status(500).json({ success: false, message: "Server error during unlock" });
-    }
+        res.json({ success: true, message: "Profile unlocked!", remainingCredits: user.viewLimit });
+    } catch (err) { res.status(500).json({ success: false, message: "Server error" }); }
 });
 
 /* ================= ADMIN ROUTES ================= */
@@ -250,14 +265,6 @@ app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
         res.json(users.map(u => ({ ...u, paymentScreenshot: getFullUrl(req, u.paymentScreenshot), images: (u.images || []).map(img => getFullUrl(req, img)) })));
-    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
-});
-
-app.get('/api/admin/profiles', authMiddleware, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
-        res.json(profiles.map(p => ({ ...p, mainImage: getFullUrl(req, p.mainImage), gallery: (p.gallery || []).map(img => getFullUrl(req, img)) })));
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
 });
 
@@ -281,15 +288,6 @@ app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/api/admin/profile/:id', authMiddleware, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const updatedProfile = await Profile.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        if (updatedProfile?.userId) await User.findByIdAndUpdate(updatedProfile.userId, req.body);
-        res.json({ success: true, message: "Updated!" });
-    } catch (err) { res.status(500).json({ error: "Update failed" }); }
-});
-
 app.delete('/api/admin/registration/:id', authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -299,19 +297,6 @@ app.delete('/api/admin/registration/:id', authMiddleware, async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Delete failed" }); }
 });
 
-app.post('/api/admin/create-profile', authMiddleware, upload.any(), async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const fileNames = (req.files || []).map(f => f.filename);
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(req.body.password || '123456', salt);
-        const newUser = new User({ ...req.body, password: hashedPassword, images: fileNames, isApproved: true, role: 'user' });
-        const savedUser = await newUser.save();
-        const newProfile = new Profile({ ...req.body, userId: savedUser._id, mainImage: fileNames[0] || "", gallery: fileNames });
-        await newProfile.save();
-        res.json({ success: true, message: "Profile Created!" });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
+/* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Server Live on PORT ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Production Server running on port ${PORT}`));
