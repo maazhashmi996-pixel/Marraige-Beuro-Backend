@@ -261,7 +261,6 @@ const deleteHandler = async (req, res) => {
             await User.findByIdAndDelete(id);
             await Profile.findOneAndDelete({ userId: id });
         } else {
-            // Agar User nahi mila toh direct Profile ID se delete karein
             await Profile.findByIdAndDelete(id);
         }
 
