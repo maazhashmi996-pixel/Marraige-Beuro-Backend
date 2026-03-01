@@ -68,7 +68,7 @@ const sharedFields = {
 };
 
 const profileSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, required: false }, // Manual profiles won't have userId initially
     ...sharedFields,
     mainImage: String,
     gallery: [String]
@@ -98,7 +98,7 @@ const storage = multer.diskStorage({
         cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
     }
 });
-const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const upload = multer({ storage: storage, limits: { fileSize: 10 * 1024 * 1024 } });
 
 /* ================= AUTH MIDDLEWARE ================= */
 const authMiddleware = (req, res, next) => {
@@ -132,20 +132,32 @@ app.post('/api/setup/admin-init', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Manual Profile Creation Handler
+// Manual Profile Creation Handler (FIXED 500 ERROR)
 const manualProfileHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const profileImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
+
+        // Handle Images safely
+        let profileImages = [];
+        if (req.files && req.files['images']) {
+            profileImages = req.files['images'].map(f => f.filename);
+        }
+
         const newProfile = new Profile({
             ...req.body,
+            userId: new mongoose.Types.ObjectId(), // Generate a placeholder ID for manual entry
             mainImage: profileImages[0] || "",
             gallery: profileImages
         });
+
         await newProfile.save();
-        res.json({ success: true, message: "✅ Profile Created Manually!" });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        res.status(200).json({ success: true, message: "✅ Profile Created Manually!" });
+    } catch (err) {
+        console.error("Manual Creation Error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
 };
+
 app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 
@@ -227,6 +239,12 @@ const deleteUser = async (req, res) => {
 };
 app.delete('/api/admin/registration/:id', authMiddleware, deleteUser);
 app.delete('/admin/registration/:id', authMiddleware, deleteUser);
+app.delete('/api/admin/profile/:id', authMiddleware, async (req, res) => {
+    try {
+        await Profile.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: "Profile Deleted" });
+    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+});
 
 /* ================= USER ROUTES ================= */
 
