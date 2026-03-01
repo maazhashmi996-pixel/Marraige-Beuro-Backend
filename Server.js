@@ -90,6 +90,16 @@ const userSchema = new mongoose.Schema({
 const Profile = mongoose.model('Profile', profileSchema);
 const User = mongoose.model('User', userSchema);
 
+/* ================= MULTER CONFIG ================= */
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/'),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
+    }
+});
+const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
+
 /* ================= AUTH MIDDLEWARE ================= */
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -103,7 +113,7 @@ const authMiddleware = (req, res, next) => {
 
 /* ================= ADMIN & SETUP ROUTES ================= */
 
-// Setup Admin
+// Setup Admin Initial
 app.post('/api/setup/admin-init', async (req, res) => {
     try {
         const { email, password, name, secretKey } = req.body;
@@ -122,7 +132,24 @@ app.post('/api/setup/admin-init', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Stats Route (Supporting both /api and direct)
+// Manual Profile Creation Handler
+const manualProfileHandler = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const profileImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
+        const newProfile = new Profile({
+            ...req.body,
+            mainImage: profileImages[0] || "",
+            gallery: profileImages
+        });
+        await newProfile.save();
+        res.json({ success: true, message: "✅ Profile Created Manually!" });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+};
+app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
+app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
+
+// Admin Stats
 const getStats = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -135,29 +162,37 @@ const getStats = async (req, res) => {
 app.get('/api/admin/stats', authMiddleware, getStats);
 app.get('/admin/stats', authMiddleware, getStats);
 
-// Registrations Route (Supporting both /api and direct)
+// Registrations (Pending)
 const getRegistrations = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
-        res.json(users.map(u => ({ ...u, paymentScreenshot: getFullUrl(req, u.paymentScreenshot), images: (u.images || []).map(img => getFullUrl(req, img)) })));
+        res.json(users.map(u => ({
+            ...u,
+            paymentScreenshot: getFullUrl(req, u.paymentScreenshot),
+            images: (u.images || []).map(img => getFullUrl(req, img))
+        })));
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
 };
 app.get('/api/admin/registrations', authMiddleware, getRegistrations);
 app.get('/admin/registrations', authMiddleware, getRegistrations);
 
-// Profiles Route (Supporting both /api and direct)
+// All Profiles Management
 const getProfiles = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
-        res.json(profiles.map(p => ({ ...p, mainImage: getFullUrl(req, p.mainImage), gallery: (p.gallery || []).map(img => getFullUrl(req, img)) })));
+        res.json(profiles.map(p => ({
+            ...p,
+            mainImage: getFullUrl(req, p.mainImage),
+            gallery: (p.gallery || []).map(img => getFullUrl(req, img))
+        })));
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
 };
 app.get('/api/admin/profiles', authMiddleware, getProfiles);
 app.get('/admin/profiles', authMiddleware, getProfiles);
 
-// Approve & Delete (API & Direct)
+// Approve User
 const approveUser = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -180,7 +215,21 @@ const approveUser = async (req, res) => {
 app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
 app.put('/admin/approve/:userId', authMiddleware, approveUser);
 
-/* ================= USER ROUTES (LOGIN/REGISTER) ================= */
+// Delete User/Profile
+const deleteUser = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const id = req.params.id;
+        await User.findByIdAndDelete(id);
+        await Profile.findOneAndDelete({ userId: id });
+        res.json({ success: true, message: "Deleted successfully" });
+    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+};
+app.delete('/api/admin/registration/:id', authMiddleware, deleteUser);
+app.delete('/admin/registration/:id', authMiddleware, deleteUser);
+
+/* ================= USER ROUTES ================= */
+
 app.post('/api/users/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -193,15 +242,6 @@ app.post('/api/users/login', async (req, res) => {
         res.json({ success: true, token, user: { id: user._id, name: user.name, role: user.role, package: user.package, viewLimit: user.viewLimit, gender: user.gender } });
     } catch (err) { res.status(500).json({ error: "Server Error" }); }
 });
-
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
-    }
-});
-const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
 
 app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
@@ -219,7 +259,6 @@ app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 },
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Matches & Unlock Routes
 app.get('/api/users/matches', async (req, res) => {
     try {
         let currentUser = null;
@@ -248,6 +287,20 @@ app.get('/api/users/matches', async (req, res) => {
         });
         res.json({ success: true, profiles: processed, credits: currentUser ? currentUser.viewLimit : 0 });
     } catch (err) { res.status(500).json({ error: "Fetch Error" }); }
+});
+
+app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
+    try {
+        const { profileId } = req.body;
+        const user = await User.findById(req.user.userId);
+        if (!user) return res.status(404).json({ success: false, message: "User not found" });
+        if (user.viewedProfiles.includes(profileId)) return res.json({ success: true, message: "Already unlocked" });
+        if (user.package !== 'Diamond Plan' && user.viewLimit <= 0) return res.status(400).json({ success: false, message: "No credits left." });
+        if (user.package !== 'Diamond Plan') user.viewLimit -= 1;
+        user.viewedProfiles.push(profileId);
+        await user.save();
+        res.json({ success: true, message: "Profile unlocked!", remainingCredits: user.viewLimit });
+    } catch (err) { res.status(500).json({ success: false, message: "Server error" }); }
 });
 
 /* ================= SERVER START ================= */
