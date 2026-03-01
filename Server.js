@@ -64,11 +64,12 @@ const sharedFields = {
     city: String, caste: String, sect: String, monthlyIncome: String,
     maritalStatus: String, about: String, education: String, occupation: String,
     motherTongue: String, houseType: String, houseSize: String, requirements: String,
+    height: String, weight: String, disability: String,
     createdAt: { type: Date, default: Date.now }
 };
 
 const profileSchema = new mongoose.Schema({
-    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, required: false }, // Manual profiles won't have userId initially
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true, required: false },
     ...sharedFields,
     mainImage: String,
     gallery: [String]
@@ -113,7 +114,6 @@ const authMiddleware = (req, res, next) => {
 
 /* ================= ADMIN & SETUP ROUTES ================= */
 
-// Setup Admin Initial
 app.post('/api/setup/admin-init', async (req, res) => {
     try {
         const { email, password, name, secretKey } = req.body;
@@ -132,12 +132,26 @@ app.post('/api/setup/admin-init', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Manual Profile Creation Handler (FIXED 500 ERROR)
+// Manual Profile Creation (FIXED & FULL)
 const manualProfileHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
 
-        // Handle Images safely
+        const { email, password, package: pkg } = req.body;
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password || "123456", salt);
+
+        // Create User First
+        const newUser = new User({
+            ...req.body,
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            isApproved: true,
+            role: 'user'
+        });
+        const savedUser = await newUser.save();
+
+        // Handle Images
         let profileImages = [];
         if (req.files && req.files['images']) {
             profileImages = req.files['images'].map(f => f.filename);
@@ -145,7 +159,7 @@ const manualProfileHandler = async (req, res) => {
 
         const newProfile = new Profile({
             ...req.body,
-            userId: new mongoose.Types.ObjectId(), // Generate a placeholder ID for manual entry
+            userId: savedUser._id,
             mainImage: profileImages[0] || "",
             gallery: profileImages
         });
@@ -153,7 +167,6 @@ const manualProfileHandler = async (req, res) => {
         await newProfile.save();
         res.status(200).json({ success: true, message: "✅ Profile Created Manually!" });
     } catch (err) {
-        console.error("Manual Creation Error:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 };
@@ -161,7 +174,19 @@ const manualProfileHandler = async (req, res) => {
 app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 
-// Admin Stats
+// Update Profile Route (For Edit Button)
+app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const updatedProfile = await Profile.findByIdAndUpdate(req.params.id, req.body, { new: true });
+        // Also update the linked user if exists
+        if (updatedProfile.userId) {
+            await User.findByIdAndUpdate(updatedProfile.userId, req.body);
+        }
+        res.json({ success: true, message: "Profile Updated!", data: updatedProfile });
+    } catch (err) { res.status(500).json({ error: "Update failed" }); }
+});
+
 const getStats = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -174,7 +199,6 @@ const getStats = async (req, res) => {
 app.get('/api/admin/stats', authMiddleware, getStats);
 app.get('/admin/stats', authMiddleware, getStats);
 
-// Registrations (Pending)
 const getRegistrations = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -189,7 +213,6 @@ const getRegistrations = async (req, res) => {
 app.get('/api/admin/registrations', authMiddleware, getRegistrations);
 app.get('/admin/registrations', authMiddleware, getRegistrations);
 
-// All Profiles Management
 const getProfiles = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -204,7 +227,6 @@ const getProfiles = async (req, res) => {
 app.get('/api/admin/profiles', authMiddleware, getProfiles);
 app.get('/admin/profiles', authMiddleware, getProfiles);
 
-// Approve User
 const approveUser = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -227,24 +249,30 @@ const approveUser = async (req, res) => {
 app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
 app.put('/admin/approve/:userId', authMiddleware, approveUser);
 
-// Delete User/Profile
-const deleteUser = async (req, res) => {
+// Unified Delete Route (FIXED 404)
+const deleteHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
-        await User.findByIdAndDelete(id);
-        await Profile.findOneAndDelete({ userId: id });
+
+        // Pehle check karein agar ye User ID hai
+        const user = await User.findById(id);
+        if (user) {
+            await User.findByIdAndDelete(id);
+            await Profile.findOneAndDelete({ userId: id });
+        } else {
+            // Agar User nahi mila toh direct Profile ID se delete karein
+            await Profile.findByIdAndDelete(id);
+        }
+
         res.json({ success: true, message: "Deleted successfully" });
     } catch (err) { res.status(500).json({ error: "Delete failed" }); }
 };
-app.delete('/api/admin/registration/:id', authMiddleware, deleteUser);
-app.delete('/admin/registration/:id', authMiddleware, deleteUser);
-app.delete('/api/admin/profile/:id', authMiddleware, async (req, res) => {
-    try {
-        await Profile.findByIdAndDelete(req.params.id);
-        res.json({ success: true, message: "Profile Deleted" });
-    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
-});
+
+app.delete('/api/admin/registration/:id', authMiddleware, deleteHandler);
+app.delete('/admin/registration/:id', authMiddleware, deleteHandler);
+app.delete('/api/admin/profile/:id', authMiddleware, deleteHandler);
+app.delete('/admin/profile/:id', authMiddleware, deleteHandler);
 
 /* ================= USER ROUTES ================= */
 
