@@ -248,7 +248,7 @@ app.delete('/api/admin/profile/:id', authMiddleware, async (req, res) => {
 
 /* ================= USER ROUTES ================= */
 
-app.post('/api/users/login', async (req, res) => {
+app.post('/users/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         const user = await User.findOne({ email: email.toLowerCase().trim() });
@@ -261,7 +261,7 @@ app.post('/api/users/login', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Server Error" }); }
 });
 
-app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
+app.post('/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
         const { password, email, package: pkg } = req.body;
         const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
