@@ -274,7 +274,7 @@ app.delete('/admin/registration/:id', authMiddleware, deleteHandler);
 app.delete('/api/admin/profile/:id', authMiddleware, deleteHandler);
 app.delete('/admin/profile/:id', authMiddleware, deleteHandler);
 
-/* ================= USER ROUTES ================= */
+/* ================= USER ROUTES ================*/
 
 app.post('/api/users/login', async (req, res) => {
     try {
