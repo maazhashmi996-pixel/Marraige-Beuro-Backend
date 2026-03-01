@@ -119,7 +119,6 @@ const authMiddleware = (req, res, next) => {
 app.post('/api/setup/admin-init', async (req, res) => {
     try {
         const { email, password, name, secretKey } = req.body;
-        // Secret Key check for security
         if (secretKey !== "ASSAN_RISHTA_786") {
             return res.status(403).json({ success: false, message: "Invalid Secret Key" });
         }
@@ -285,12 +284,38 @@ app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
 });
 
 /* ================= ADMIN ROUTES ================= */
+
+// Dashboard Stats Route
+app.get('/api/admin/stats', authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const totalUsers = await User.countDocuments({ role: 'user' });
+        const pendingApprovals = await User.countDocuments({ isApproved: false, role: 'user' });
+        const totalProfiles = await Profile.countDocuments();
+        res.json({ totalUsers, pendingApprovals, totalProfiles });
+    } catch (err) { res.status(500).json({ error: "Stats failed" }); }
+});
+
+// Get Pending Registrations
 app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
         res.json(users.map(u => ({ ...u, paymentScreenshot: getFullUrl(req, u.paymentScreenshot), images: (u.images || []).map(img => getFullUrl(req, img)) })));
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+});
+
+// Get Approved Profiles (Dashboard View)
+app.get('/api/admin/profiles', authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
+        res.json(profiles.map(p => ({
+            ...p,
+            mainImage: getFullUrl(req, p.mainImage),
+            gallery: (p.gallery || []).map(img => getFullUrl(req, img))
+        })));
+    } catch (err) { res.status(500).json({ error: "Profiles fetch failed" }); }
 });
 
 app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
