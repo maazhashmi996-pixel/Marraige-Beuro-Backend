@@ -248,7 +248,7 @@ app.delete('/api/admin/profile/:id', authMiddleware, async (req, res) => {
 
 /* ================= USER ROUTES ================= */
 
-app.post('/users/login', async (req, res) => {
+app.post('/api/users/login', async (req, res) => {
     try {
         const { email, password } = req.body;
         const user = await User.findOne({ email: email.toLowerCase().trim() });
