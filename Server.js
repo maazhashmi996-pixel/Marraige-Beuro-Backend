@@ -14,16 +14,16 @@ dotenv.config();
 const app = express();
 
 /* ================= PRODUCTION MIDDLEWARES ================= */
-// Helmet security (crossOriginResourcePolicy: false takay images load hon)
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 
-// CORS Configuration (Production mein origin ko apni domain par set karein)
-const allowedOrigins = [process.env.FRONTEND_URL,
+const allowedOrigins = [
+    process.env.FRONTEND_URL,
     'http://localhost:3000',
     'https://www.assanrishta.com',
     'https://assanrishta.com'
 ];
+
 app.use(cors({
     origin: (origin, callback) => {
         if (!origin || allowedOrigins.includes(origin)) {
@@ -39,7 +39,6 @@ app.use(cors({
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Static Folder for Uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const dir = './uploads';
@@ -50,7 +49,6 @@ const getFullUrl = (req, imgPath) => {
     if (!imgPath || imgPath === "undefined" || imgPath === "null") return "";
     if (imgPath.startsWith('http')) return imgPath;
     const fileName = path.basename(imgPath);
-    // Production mein HTTPS check zaroori hai
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const baseUrl = `${protocol}://${req.get('host')}`;
     return `${baseUrl}/uploads/${fileName}`;
@@ -103,7 +101,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+    limits: { fileSize: 5 * 1024 * 1024 }
 });
 
 /* ================= AUTH MIDDLEWARE ================= */
@@ -117,8 +115,36 @@ const authMiddleware = (req, res, next) => {
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
 };
 
-/* ================= USER ROUTES ================= */
+/* ================= SETUP ROUTE (FOR INITIAL ADMIN) ================= */
+app.post('/api/setup/admin-init', async (req, res) => {
+    try {
+        const { email, password, name, secretKey } = req.body;
+        // Secret Key check for security
+        if (secretKey !== "ASSAN_RISHTA_786") {
+            return res.status(403).json({ success: false, message: "Invalid Secret Key" });
+        }
+        const existingAdmin = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existingAdmin) return res.status(400).json({ success: false, message: "Admin already exists!" });
 
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const newAdmin = new User({
+            name: name || "Super Admin",
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            role: 'admin',
+            isApproved: true,
+            package: 'Diamond Plan',
+            viewLimit: 999999
+        });
+
+        await newAdmin.save();
+        res.json({ success: true, message: "✅ Admin Created Successfully! Now you can login." });
+    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+/* ================= USER ROUTES ================= */
 app.post('/api/users/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -183,7 +209,6 @@ app.get('/api/users/matches', async (req, res) => {
     try {
         let currentUser = null;
         const authHeader = req.headers.authorization;
-
         if (authHeader && authHeader.startsWith('Bearer ')) {
             try {
                 const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
@@ -234,10 +259,7 @@ app.get('/api/users/matches', async (req, res) => {
             credits: currentUser ? currentUser.viewLimit : 0,
             unlockedProfiles: currentUser ? currentUser.viewedProfiles : []
         });
-
-    } catch (err) {
-        res.status(500).json({ success: false, error: "Fetch Error" });
-    }
+    } catch (err) { res.status(500).json({ success: false, error: "Fetch Error" }); }
 });
 
 app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
@@ -263,7 +285,6 @@ app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
 });
 
 /* ================= ADMIN ROUTES ================= */
-
 app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
