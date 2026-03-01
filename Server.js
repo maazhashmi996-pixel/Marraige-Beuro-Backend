@@ -7,13 +7,13 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
-const helmet = require('helmet'); // Security headers
-const compression = require('compression'); // Speed optimization
+const helmet = require('helmet');
+const compression = require('compression');
 
 dotenv.config();
 const app = express();
 
-/* ================= PRODUCTION MIDDLEWARES ================= */
+/* ================= MIDDLEWARES ================= */
 app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(compression());
 
@@ -38,7 +38,6 @@ app.use(cors({
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const dir = './uploads';
@@ -54,10 +53,10 @@ const getFullUrl = (req, imgPath) => {
     return `${baseUrl}/uploads/${fileName}`;
 };
 
-/* ================= MONGODB CONNECTION ================= */
+/* ================= MONGODB ================= */
 mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log("✅ MongoDB Connected Production Mode!"))
-    .catch(err => console.error("❌ DB Connection Error:", err));
+    .then(() => console.log("✅ MongoDB Connected!"))
+    .catch(err => console.error("❌ DB Error:", err));
 
 /* ================= SCHEMAS ================= */
 const sharedFields = {
@@ -91,19 +90,6 @@ const userSchema = new mongoose.Schema({
 const Profile = mongoose.model('Profile', profileSchema);
 const User = mongoose.model('User', userSchema);
 
-/* ================= MULTER CONFIG ================= */
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
-    }
-});
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }
-});
-
 /* ================= AUTH MIDDLEWARE ================= */
 const authMiddleware = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -115,178 +101,29 @@ const authMiddleware = (req, res, next) => {
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
 };
 
-/* ================= SETUP ROUTE (FOR INITIAL ADMIN) ================= */
+/* ================= ADMIN & SETUP ROUTES ================= */
+
+// Setup Admin
 app.post('/api/setup/admin-init', async (req, res) => {
     try {
         const { email, password, name, secretKey } = req.body;
-        if (secretKey !== "ASSAN_RISHTA_786") {
-            return res.status(403).json({ success: false, message: "Invalid Secret Key" });
-        }
+        if (secretKey !== "ASSAN_RISHTA_786") return res.status(403).json({ success: false, message: "Invalid Secret Key" });
         const existingAdmin = await User.findOne({ email: email.toLowerCase().trim() });
         if (existingAdmin) return res.status(400).json({ success: false, message: "Admin already exists!" });
-
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-
         const newAdmin = new User({
-            name: name || "Super Admin",
-            email: email.toLowerCase().trim(),
-            password: hashedPassword,
-            role: 'admin',
-            isApproved: true,
-            package: 'Diamond Plan',
-            viewLimit: 999999
+            name: name || "Super Admin", email: email.toLowerCase().trim(),
+            password: hashedPassword, role: 'admin', isApproved: true,
+            package: 'Diamond Plan', viewLimit: 999999
         });
-
         await newAdmin.save();
-        res.json({ success: true, message: "✅ Admin Created Successfully! Now you can login." });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+        res.json({ success: true, message: "✅ Admin Created!" });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-/* ================= USER ROUTES ================= */
-app.post('/api/users/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase().trim() });
-        if (!user) return res.status(401).json({ success: false, message: "User not found" });
-        if (user.role !== 'admin' && !user.isApproved) return res.status(403).json({ success: false, message: "Account pending approval." });
-
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
-
-        const token = jwt.sign(
-            { userId: user._id, role: user.role },
-            process.env.JWT_SECRET,
-            { expiresIn: '7d' }
-        );
-
-        res.json({
-            success: true,
-            token,
-            user: {
-                id: user._id,
-                name: user.name,
-                role: user.role,
-                package: user.package,
-                viewLimit: user.viewLimit,
-                gender: user.gender
-            }
-        });
-    } catch (err) { res.status(500).json({ error: "Internal Server Error" }); }
-});
-
-app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
-    try {
-        const { password, email, package: pkg } = req.body;
-        const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
-        if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
-
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-
-        const userImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
-        const screenshot = req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].filename : null;
-
-        const limits = { 'Basic Plan': 3, 'Gold Plan': 10, 'Diamond Plan': 999999 };
-        const newUser = new User({
-            ...req.body,
-            email: email.toLowerCase().trim(),
-            password: hashedPassword,
-            viewLimit: limits[pkg] || 3,
-            images: userImages,
-            paymentScreenshot: screenshot,
-            isApproved: false,
-            role: 'user'
-        });
-
-        await newUser.save();
-        res.json({ success: true, message: "Registered! Waiting for admin approval." });
-    } catch (err) { res.status(500).json({ success: false, error: err.message }); }
-});
-
-app.get('/api/users/matches', async (req, res) => {
-    try {
-        let currentUser = null;
-        const authHeader = req.headers.authorization;
-        if (authHeader && authHeader.startsWith('Bearer ')) {
-            try {
-                const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
-                currentUser = await User.findById(decoded.userId);
-            } catch (e) { }
-        }
-
-        let query = {};
-        if (currentUser && currentUser.role !== 'admin') {
-            const myGender = (currentUser.gender || "").trim().toLowerCase();
-            const target = (myGender === 'female' || myGender === 'larki') ? 'male' : 'female';
-            query.gender = { $regex: new RegExp(`^${target}$`, "i") };
-            query.userId = { $ne: currentUser._id };
-        }
-
-        let matches = await Profile.find(query).sort({ createdAt: -1 }).lean();
-
-        if (matches.length === 0) {
-            const approvedUsers = await User.find({ ...query, isApproved: true, role: 'user' }).lean();
-            matches = approvedUsers.map(u => ({
-                ...u,
-                userId: u._id,
-                mainImage: u.images ? u.images[0] : "",
-                gallery: u.images || []
-            }));
-        }
-
-        const processed = matches.map(p => {
-            let isLocked = true;
-            const pid = (p._id || p.userId).toString();
-            if (currentUser) {
-                const hasViewed = currentUser.viewedProfiles?.some(id => id.toString() === pid);
-                if (hasViewed || currentUser.package === 'Diamond Plan' || currentUser.role === 'admin') isLocked = false;
-            }
-            const data = {
-                ...p,
-                mainImage: getFullUrl(req, p.mainImage),
-                gallery: (p.gallery || []).map(img => getFullUrl(req, img)),
-                isLocked: isLocked
-            };
-            if (isLocked) { delete data.phone; delete data.fatherName; }
-            return data;
-        });
-
-        res.json({
-            success: true,
-            profiles: processed,
-            credits: currentUser ? currentUser.viewLimit : 0,
-            unlockedProfiles: currentUser ? currentUser.viewedProfiles : []
-        });
-    } catch (err) { res.status(500).json({ success: false, error: "Fetch Error" }); }
-});
-
-app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
-    try {
-        const { profileId } = req.body;
-        const user = await User.findById(req.user.userId);
-        if (!user) return res.status(404).json({ success: false, message: "User not found" });
-
-        if (user.viewedProfiles.includes(profileId)) {
-            return res.json({ success: true, message: "Already unlocked" });
-        }
-
-        if (user.package !== 'Diamond Plan' && user.viewLimit <= 0) {
-            return res.status(400).json({ success: false, message: "No credits left." });
-        }
-
-        if (user.package !== 'Diamond Plan') user.viewLimit -= 1;
-        user.viewedProfiles.push(profileId);
-        await user.save();
-
-        res.json({ success: true, message: "Profile unlocked!", remainingCredits: user.viewLimit });
-    } catch (err) { res.status(500).json({ success: false, message: "Server error" }); }
-});
-
-/* ================= ADMIN ROUTES ================= */
-
-// Dashboard Stats Route
-app.get('/api/admin/stats', authMiddleware, async (req, res) => {
+// Stats Route (Supporting both /api and direct)
+const getStats = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const totalUsers = await User.countDocuments({ role: 'user' });
@@ -294,31 +131,34 @@ app.get('/api/admin/stats', authMiddleware, async (req, res) => {
         const totalProfiles = await Profile.countDocuments();
         res.json({ totalUsers, pendingApprovals, totalProfiles });
     } catch (err) { res.status(500).json({ error: "Stats failed" }); }
-});
+};
+app.get('/api/admin/stats', authMiddleware, getStats);
+app.get('/admin/stats', authMiddleware, getStats);
 
-// Get Pending Registrations
-app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
+// Registrations Route (Supporting both /api and direct)
+const getRegistrations = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
         res.json(users.map(u => ({ ...u, paymentScreenshot: getFullUrl(req, u.paymentScreenshot), images: (u.images || []).map(img => getFullUrl(req, img)) })));
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
-});
+};
+app.get('/api/admin/registrations', authMiddleware, getRegistrations);
+app.get('/admin/registrations', authMiddleware, getRegistrations);
 
-// Get Approved Profiles (Dashboard View)
-app.get('/api/admin/profiles', authMiddleware, async (req, res) => {
+// Profiles Route (Supporting both /api and direct)
+const getProfiles = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
-        res.json(profiles.map(p => ({
-            ...p,
-            mainImage: getFullUrl(req, p.mainImage),
-            gallery: (p.gallery || []).map(img => getFullUrl(req, img))
-        })));
-    } catch (err) { res.status(500).json({ error: "Profiles fetch failed" }); }
-});
+        res.json(profiles.map(p => ({ ...p, mainImage: getFullUrl(req, p.mainImage), gallery: (p.gallery || []).map(img => getFullUrl(req, img)) })));
+    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+};
+app.get('/api/admin/profiles', authMiddleware, getProfiles);
+app.get('/admin/profiles', authMiddleware, getProfiles);
 
-app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
+// Approve & Delete (API & Direct)
+const approveUser = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const user = await User.findById(req.params.userId);
@@ -336,17 +176,80 @@ app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
         }
         res.json({ success: true, message: "User Approved!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
+};
+app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
+app.put('/admin/approve/:userId', authMiddleware, approveUser);
+
+/* ================= USER ROUTES (LOGIN/REGISTER) ================= */
+app.post('/api/users/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user) return res.status(401).json({ success: false, message: "User not found" });
+        if (user.role !== 'admin' && !user.isApproved) return res.status(403).json({ success: false, message: "Account pending approval." });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
+        const token = jwt.sign({ userId: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+        res.json({ success: true, token, user: { id: user._id, name: user.name, role: user.role, package: user.package, viewLimit: user.viewLimit, gender: user.gender } });
+    } catch (err) { res.status(500).json({ error: "Server Error" }); }
 });
 
-app.delete('/api/admin/registration/:id', authMiddleware, async (req, res) => {
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, 'uploads/'),
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
+    }
+});
+const upload = multer({ storage: storage, limits: { fileSize: 5 * 1024 * 1024 } });
+
+app.post('/api/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        await User.findByIdAndDelete(req.params.id);
-        await Profile.findOneAndDelete({ userId: req.params.id });
-        res.json({ success: true, message: "Deleted" });
-    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+        const { password, email, package: pkg } = req.body;
+        const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const userImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
+        const screenshot = req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].filename : null;
+        const limits = { 'Basic Plan': 3, 'Gold Plan': 10, 'Diamond Plan': 999999 };
+        const newUser = new User({ ...req.body, email: email.toLowerCase().trim(), password: hashedPassword, viewLimit: limits[pkg] || 3, images: userImages, paymentScreenshot: screenshot, isApproved: false, role: 'user' });
+        await newUser.save();
+        res.json({ success: true, message: "Registered! Waiting approval." });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Matches & Unlock Routes
+app.get('/api/users/matches', async (req, res) => {
+    try {
+        let currentUser = null;
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            try { const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET); currentUser = await User.findById(decoded.userId); } catch (e) { }
+        }
+        let query = {};
+        if (currentUser && currentUser.role !== 'admin') {
+            const myGender = (currentUser.gender || "").trim().toLowerCase();
+            const target = (myGender === 'female' || myGender === 'larki') ? 'male' : 'female';
+            query.gender = { $regex: new RegExp(`^${target}$`, "i") };
+            query.userId = { $ne: currentUser._id };
+        }
+        let matches = await Profile.find(query).sort({ createdAt: -1 }).lean();
+        const processed = matches.map(p => {
+            let isLocked = true;
+            const pid = (p._id || p.userId).toString();
+            if (currentUser) {
+                const hasViewed = currentUser.viewedProfiles?.some(id => id.toString() === pid);
+                if (hasViewed || currentUser.package === 'Diamond Plan' || currentUser.role === 'admin') isLocked = false;
+            }
+            const data = { ...p, mainImage: getFullUrl(req, p.mainImage), gallery: (p.gallery || []).map(img => getFullUrl(req, img)), isLocked: isLocked };
+            if (isLocked) { delete data.phone; delete data.fatherName; }
+            return data;
+        });
+        res.json({ success: true, profiles: processed, credits: currentUser ? currentUser.viewLimit : 0 });
+    } catch (err) { res.status(500).json({ error: "Fetch Error" }); }
 });
 
 /* ================= SERVER START ================= */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Production Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Server on port ${PORT}`));
