@@ -355,7 +355,7 @@ app.get('/users/matches', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Fetch Error" }); }
 });
 
-app.post('/api/users/unlock-profile', authMiddleware, async (req, res) => {
+app.post('/users/unlock-profile', authMiddleware, async (req, res) => {
     try {
         const { profileId } = req.body;
         const user = await User.findById(req.user.userId);
