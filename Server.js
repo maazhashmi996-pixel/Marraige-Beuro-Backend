@@ -132,7 +132,6 @@ app.post('/api/setup/admin-init', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Manual Profile Creation (FIXED & FULL)
 const manualProfileHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -141,7 +140,6 @@ const manualProfileHandler = async (req, res) => {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
 
-        // Create User First (Explicitly passing all fields)
         const newUser = new User({
             ...req.body,
             email: email.toLowerCase().trim(),
@@ -151,14 +149,13 @@ const manualProfileHandler = async (req, res) => {
         });
         const savedUser = await newUser.save();
 
-        // Handle Images
         let profileImages = [];
         if (req.files && req.files['images']) {
             profileImages = req.files['images'].map(f => f.filename);
         }
 
         const newProfile = new Profile({
-            ...req.body, // This spreads all fields from body including weight, monthlyIncome etc.
+            ...req.body,
             userId: savedUser._id,
             mainImage: profileImages[0] || "",
             gallery: profileImages
@@ -174,16 +171,31 @@ const manualProfileHandler = async (req, res) => {
 app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 
-// Update Profile Route (For Edit Button)
+// Update Profile Route (FIXED FOR 500 ERROR)
 app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const updatedProfile = await Profile.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        if (updatedProfile.userId) {
-            await User.findByIdAndUpdate(updatedProfile.userId, req.body);
+
+        // Fix for 500 error: Safety check for ID and updated data
+        const updatedProfile = await Profile.findByIdAndUpdate(
+            req.params.id,
+            req.body,
+            { returnDocument: 'after', runValidators: true }
+        );
+
+        if (!updatedProfile) {
+            return res.status(404).json({ success: false, message: "Profile not found" });
         }
+
+        if (updatedProfile.userId) {
+            await User.findByIdAndUpdate(updatedProfile.userId, req.body, { runValidators: true });
+        }
+
         res.json({ success: true, message: "Profile Updated!", data: updatedProfile });
-    } catch (err) { res.status(500).json({ error: "Update failed" }); }
+    } catch (err) {
+        console.error("Update Error:", err.message);
+        res.status(500).json({ success: false, error: "Update failed", details: err.message });
+    }
 });
 
 const getStats = async (req, res) => {
@@ -239,7 +251,6 @@ const approveUser = async (req, res) => {
             const originalId = userData._id;
             const images = userData.images || [];
 
-            // Removing technical fields but KEEPING all business fields
             delete userData._id;
             delete userData.password;
             delete userData.images;
@@ -261,7 +272,6 @@ const approveUser = async (req, res) => {
 app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
 app.put('/admin/approve/:userId', authMiddleware, approveUser);
 
-// Unified Delete Route
 const deleteHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
