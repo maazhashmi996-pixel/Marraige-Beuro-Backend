@@ -137,11 +137,11 @@ const manualProfileHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
 
-        const { email, password, package: pkg } = req.body;
+        const { email, password } = req.body;
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
 
-        // Create User First
+        // Create User First (Explicitly passing all fields)
         const newUser = new User({
             ...req.body,
             email: email.toLowerCase().trim(),
@@ -158,7 +158,7 @@ const manualProfileHandler = async (req, res) => {
         }
 
         const newProfile = new Profile({
-            ...req.body,
+            ...req.body, // This spreads all fields from body including weight, monthlyIncome etc.
             userId: savedUser._id,
             mainImage: profileImages[0] || "",
             gallery: profileImages
@@ -179,7 +179,6 @@ app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async 
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const updatedProfile = await Profile.findByIdAndUpdate(req.params.id, req.body, { new: true });
-        // Also update the linked user if exists
         if (updatedProfile.userId) {
             await User.findByIdAndUpdate(updatedProfile.userId, req.body);
         }
@@ -239,8 +238,21 @@ const approveUser = async (req, res) => {
             const userData = user.toObject();
             const originalId = userData._id;
             const images = userData.images || [];
-            delete userData._id; delete userData.password; delete userData.images; delete userData.__v;
-            const newProfile = new Profile({ ...userData, userId: originalId, mainImage: images[0] || "", gallery: images });
+
+            // Removing technical fields but KEEPING all business fields
+            delete userData._id;
+            delete userData.password;
+            delete userData.images;
+            delete userData.__v;
+            delete userData.viewedProfiles;
+            delete userData.viewLimit;
+
+            const newProfile = new Profile({
+                ...userData,
+                userId: originalId,
+                mainImage: images[0] || "",
+                gallery: images
+            });
             await newProfile.save();
         }
         res.json({ success: true, message: "User Approved!" });
@@ -249,13 +261,11 @@ const approveUser = async (req, res) => {
 app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
 app.put('/admin/approve/:userId', authMiddleware, approveUser);
 
-// Unified Delete Route (FIXED 404)
+// Unified Delete Route
 const deleteHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
-
-        // Pehle check karein agar ye User ID hai
         const user = await User.findById(id);
         if (user) {
             await User.findByIdAndDelete(id);
@@ -263,7 +273,6 @@ const deleteHandler = async (req, res) => {
         } else {
             await Profile.findByIdAndDelete(id);
         }
-
         res.json({ success: true, message: "Deleted successfully" });
     } catch (err) { res.status(500).json({ error: "Delete failed" }); }
 };
