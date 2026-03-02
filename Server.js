@@ -171,15 +171,17 @@ const manualProfileHandler = async (req, res) => {
 app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
 
-// Update Profile Route (FIXED FOR 500 ERROR)
+// Update Profile Route (FIXED FOR 500 ERROR - FULL PATHS KE SATH)
 app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
 
-        // Fix for 500 error: Safety check for ID and updated data
+        // _id aur userId ko update body se nikalna zaroori hai taake crash na ho
+        const { _id, userId, ...updateData } = req.body;
+
         const updatedProfile = await Profile.findByIdAndUpdate(
             req.params.id,
-            req.body,
+            updateData,
             { returnDocument: 'after', runValidators: true }
         );
 
@@ -188,7 +190,7 @@ app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async 
         }
 
         if (updatedProfile.userId) {
-            await User.findByIdAndUpdate(updatedProfile.userId, req.body, { runValidators: true });
+            await User.findByIdAndUpdate(updatedProfile.userId, updateData, { runValidators: true });
         }
 
         res.json({ success: true, message: "Profile Updated!", data: updatedProfile });
