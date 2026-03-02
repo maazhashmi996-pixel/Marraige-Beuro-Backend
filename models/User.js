@@ -31,7 +31,7 @@ const userSchema = new mongoose.Schema({
     education: { type: String },
     occupation: { type: String },
     // Frontend 'monthlyIncome' ko 'income' map kiya gaya hai consistency ke liye
-    income: { type: String },
+    monthlyIncome: { type: String },
     houseType: { type: String, default: "Own" },
     houseSize: { type: String },
 

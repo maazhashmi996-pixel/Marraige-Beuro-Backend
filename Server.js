@@ -63,7 +63,7 @@ const sharedFields = {
     name: String, fatherName: String, phone: String, age: Number, gender: String,
     city: String, caste: String, sect: String, monthlyIncome: String,
     maritalStatus: String, about: String, education: String, occupation: String,
-    motherTongue: String, houseType: String, houseSize: String, requirements: String,
+    motherTongue: String, familyDetail: String, houseType: String, houseSize: String, requirements: String,
     height: String, weight: String, disability: String,
     createdAt: { type: Date, default: Date.now }
 };
