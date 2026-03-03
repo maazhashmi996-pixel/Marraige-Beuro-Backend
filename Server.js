@@ -112,225 +112,16 @@ const authMiddleware = (req, res, next) => {
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
 };
 
-/* ================= ADMIN & SETUP ROUTES ================= */
-
-app.post('/api/setup/admin-init', async (req, res) => {
-    try {
-        const { email, password, name, secretKey } = req.body;
-        if (secretKey !== "ASSAN_RISHTA_786") return res.status(403).json({ success: false, message: "Invalid Secret Key" });
-        const existingAdmin = await User.findOne({ email: email.toLowerCase().trim() });
-        if (existingAdmin) return res.status(400).json({ success: false, message: "Admin already exists!" });
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const newAdmin = new User({
-            name: name || "Super Admin", email: email.toLowerCase().trim(),
-            password: hashedPassword, role: 'admin', isApproved: true,
-            package: 'Diamond Plan', viewLimit: 999999
-        });
-        await newAdmin.save();
-        res.json({ success: true, message: "✅ Admin Created!" });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-const manualProfileHandler = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-
-        const { email, password } = req.body;
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password || "123456", salt);
-
-        const newUser = new User({
-            ...req.body,
-            email: email.toLowerCase().trim(),
-            password: hashedPassword,
-            isApproved: true,
-            role: 'user'
-        });
-        const savedUser = await newUser.save();
-
-        let profileImages = [];
-        if (req.files && req.files['images']) {
-            profileImages = req.files['images'].map(f => f.filename);
-        }
-
-        const newProfile = new Profile({
-            ...req.body,
-            userId: savedUser._id,
-            mainImage: profileImages[0] || "",
-            gallery: profileImages
-        });
-
-        await newProfile.save();
-        res.status(200).json({ success: true, message: "✅ Profile Created Manually!" });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-};
-
-app.post('/api/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
-app.post('/admin/profile/manual', authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
-
-// Update Profile Route (FIXED FOR 500 ERROR - FULL PATHS KE SATH)
-app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-
-        // _id aur userId ko update body se nikalna zaroori hai taake crash na ho
-        const { _id, userId, ...updateData } = req.body;
-
-        const updatedProfile = await Profile.findByIdAndUpdate(
-            req.params.id,
-            updateData,
-            { returnDocument: 'after', runValidators: true }
-        );
-
-        if (!updatedProfile) {
-            return res.status(404).json({ success: false, message: "Profile not found" });
-        }
-
-        if (updatedProfile.userId) {
-            await User.findByIdAndUpdate(updatedProfile.userId, updateData, { runValidators: true });
-        }
-
-        res.json({ success: true, message: "Profile Updated!", data: updatedProfile });
-    } catch (err) {
-        console.error("Update Error:", err.message);
-        res.status(500).json({ success: false, error: "Update failed", details: err.message });
-    }
-});
-
-const getStats = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const totalUsers = await User.countDocuments({ role: 'user' });
-        const pendingApprovals = await User.countDocuments({ isApproved: false, role: 'user' });
-        const totalProfiles = await Profile.countDocuments();
-        res.json({ totalUsers, pendingApprovals, totalProfiles });
-    } catch (err) { res.status(500).json({ error: "Stats failed" }); }
-};
-app.get('/api/admin/stats', authMiddleware, getStats);
-app.get('/admin/stats', authMiddleware, getStats);
-
-const getRegistrations = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
-        res.json(users.map(u => ({
-            ...u,
-            paymentScreenshot: getFullUrl(req, u.paymentScreenshot),
-            images: (u.images || []).map(img => getFullUrl(req, img))
-        })));
-    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
-};
-app.get('/api/admin/registrations', authMiddleware, getRegistrations);
-app.get('/admin/registrations', authMiddleware, getRegistrations);
-
-const getProfiles = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
-        res.json(profiles.map(p => ({
-            ...p,
-            mainImage: getFullUrl(req, p.mainImage),
-            gallery: (p.gallery || []).map(img => getFullUrl(req, img))
-        })));
-    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
-};
-app.get('/api/admin/profiles', authMiddleware, getProfiles);
-app.get('/admin/profiles', authMiddleware, getProfiles);
-
-const approveUser = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const user = await User.findById(req.params.userId);
-        if (!user) return res.status(404).json({ message: "User not found" });
-        user.isApproved = true;
-        await user.save();
-        const existingProfile = await Profile.findOne({ userId: user._id });
-        if (!existingProfile) {
-            const userData = user.toObject();
-            const originalId = userData._id;
-            const images = userData.images || [];
-
-            delete userData._id;
-            delete userData.password;
-            delete userData.images;
-            delete userData.__v;
-            delete userData.viewedProfiles;
-            delete userData.viewLimit;
-
-            const newProfile = new Profile({
-                ...userData,
-                userId: originalId,
-                mainImage: images[0] || "",
-                gallery: images
-            });
-            await newProfile.save();
-        }
-        res.json({ success: true, message: "User Approved!" });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-};
-app.put('/api/admin/approve/:userId', authMiddleware, approveUser);
-app.put('/admin/approve/:userId', authMiddleware, approveUser);
-
-const deleteHandler = async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const id = req.params.id;
-        const user = await User.findById(id);
-        if (user) {
-            await User.findByIdAndDelete(id);
-            await Profile.findOneAndDelete({ userId: id });
-        } else {
-            await Profile.findByIdAndDelete(id);
-        }
-        res.json({ success: true, message: "Deleted successfully" });
-    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
-};
-
-app.delete('/api/admin/registration/:id', authMiddleware, deleteHandler);
-app.delete('/admin/registration/:id', authMiddleware, deleteHandler);
-app.delete('/api/admin/profile/:id', authMiddleware, deleteHandler);
-app.delete('/admin/profile/:id', authMiddleware, deleteHandler);
-
-/* ================= USER ROUTES ================*/
-
-app.post('/api/users/login', async (req, res) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email: email.toLowerCase().trim() });
-        if (!user) return res.status(401).json({ success: false, message: "User not found" });
-        if (user.role !== 'admin' && !user.isApproved) return res.status(403).json({ success: false, message: "Account pending approval." });
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
-        const token = jwt.sign({ userId: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
-        res.json({ success: true, token, user: { id: user._id, name: user.name, role: user.role, package: user.package, viewLimit: user.viewLimit, gender: user.gender } });
-    } catch (err) { res.status(500).json({ error: "Server Error" }); }
-});
-
-app.post('/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
-    try {
-        const { password, email, package: pkg } = req.body;
-        const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
-        if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(password, salt);
-        const userImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
-        const screenshot = req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].filename : null;
-        const limits = { 'Basic Plan': 3, 'Gold Plan': 10, 'Diamond Plan': 999999 };
-        const newUser = new User({ ...req.body, email: email.toLowerCase().trim(), password: hashedPassword, viewLimit: limits[pkg] || 3, images: userImages, paymentScreenshot: screenshot, isApproved: false, role: 'user' });
-        await newUser.save();
-        res.json({ success: true, message: "Registered! Waiting approval." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
-
-app.get('/api/users/matches', async (req, res) => {
+/* ================= MATCHES ROUTE (CRITICAL FIX) ================*/
+app.get(['/api/users/matches', '/users/matches'], async (req, res) => {
     try {
         let currentUser = null;
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
-            try { const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET); currentUser = await User.findById(decoded.userId); } catch (e) { }
+            try {
+                const decoded = jwt.verify(authHeader.split(' ')[1], process.env.JWT_SECRET);
+                currentUser = await User.findById(decoded.userId);
+            } catch (e) { }
         }
         let query = {};
         if (currentUser && currentUser.role !== 'admin') {
@@ -355,7 +146,185 @@ app.get('/api/users/matches', async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Fetch Error" }); }
 });
 
-app.post('/users/unlock-profile', authMiddleware, async (req, res) => {
+/* ================= ADMIN & SETUP ROUTES ================= */
+
+app.post(['/api/setup/admin-init', '/setup/admin-init'], async (req, res) => {
+    try {
+        const { email, password, name, secretKey } = req.body;
+        if (secretKey !== "ASSAN_RISHTA_786") return res.status(403).json({ success: false, message: "Invalid Secret Key" });
+        const existingAdmin = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existingAdmin) return res.status(400).json({ success: false, message: "Admin already exists!" });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const newAdmin = new User({
+            name: name || "Super Admin", email: email.toLowerCase().trim(),
+            password: hashedPassword, role: 'admin', isApproved: true,
+            package: 'Diamond Plan', viewLimit: 999999
+        });
+        await newAdmin.save();
+        res.json({ success: true, message: "✅ Admin Created!" });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const manualProfileHandler = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const { email, password } = req.body;
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password || "123456", salt);
+        const newUser = new User({
+            ...req.body,
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            isApproved: true,
+            role: 'user'
+        });
+        const savedUser = await newUser.save();
+        let profileImages = [];
+        if (req.files && req.files['images']) {
+            profileImages = req.files['images'].map(f => f.filename);
+        }
+        const newProfile = new Profile({
+            ...req.body,
+            userId: savedUser._id,
+            mainImage: profileImages[0] || "",
+            gallery: profileImages
+        });
+        await newProfile.save();
+        res.status(200).json({ success: true, message: "✅ Profile Created Manually!" });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
+
+app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const { _id, userId, ...updateData } = req.body;
+        const updatedProfile = await Profile.findByIdAndUpdate(
+            req.params.id,
+            updateData,
+            { returnDocument: 'after', runValidators: true }
+        );
+        if (!updatedProfile) return res.status(404).json({ success: false, message: "Profile not found" });
+        if (updatedProfile.userId) {
+            await User.findByIdAndUpdate(updatedProfile.userId, updateData, { runValidators: true });
+        }
+        res.json({ success: true, message: "Profile Updated!", data: updatedProfile });
+    } catch (err) {
+        res.status(500).json({ success: false, error: "Update failed", details: err.message });
+    }
+});
+
+const getStats = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const totalUsers = await User.countDocuments({ role: 'user' });
+        const pendingApprovals = await User.countDocuments({ isApproved: false, role: 'user' });
+        const totalProfiles = await Profile.countDocuments();
+        res.json({ totalUsers, pendingApprovals, totalProfiles });
+    } catch (err) { res.status(500).json({ error: "Stats failed" }); }
+};
+app.get(['/api/admin/stats', '/admin/stats'], authMiddleware, getStats);
+
+const getRegistrations = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const users = await User.find({ role: 'user', isApproved: false }).sort({ createdAt: -1 }).lean();
+        res.json(users.map(u => ({
+            ...u,
+            paymentScreenshot: getFullUrl(req, u.paymentScreenshot),
+            images: (u.images || []).map(img => getFullUrl(req, img))
+        })));
+    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+};
+app.get(['/api/admin/registrations', '/admin/registrations'], authMiddleware, getRegistrations);
+
+const getProfiles = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const profiles = await Profile.find().sort({ createdAt: -1 }).lean();
+        res.json(profiles.map(p => ({
+            ...p,
+            mainImage: getFullUrl(req, p.mainImage),
+            gallery: (p.gallery || []).map(img => getFullUrl(req, img))
+        })));
+    } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
+};
+app.get(['/api/admin/profiles', '/admin/profiles'], authMiddleware, getProfiles);
+
+const approveUser = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const user = await User.findById(req.params.userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
+        user.isApproved = true;
+        await user.save();
+        const existingProfile = await Profile.findOne({ userId: user._id });
+        if (!existingProfile) {
+            const userData = user.toObject();
+            const originalId = userData._id;
+            const images = userData.images || [];
+            delete userData._id; delete userData.password; delete userData.images;
+            delete userData.__v; delete userData.viewedProfiles; delete userData.viewLimit;
+            const newProfile = new Profile({ ...userData, userId: originalId, mainImage: images[0] || "", gallery: images });
+            await newProfile.save();
+        }
+        res.json({ success: true, message: "User Approved!" });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+};
+app.put(['/api/admin/approve/:userId', '/admin/approve/:userId'], authMiddleware, approveUser);
+
+const deleteHandler = async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+        const id = req.params.id;
+        const user = await User.findById(id);
+        if (user) {
+            await User.findByIdAndDelete(id);
+            await Profile.findOneAndDelete({ userId: id });
+        } else {
+            await Profile.findByIdAndDelete(id);
+        }
+        res.json({ success: true, message: "Deleted successfully" });
+    } catch (err) { res.status(500).json({ error: "Delete failed" }); }
+};
+app.delete(['/api/admin/registration/:id', '/admin/registration/:id', '/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, deleteHandler);
+
+/* ================= USER AUTH ROUTES ================*/
+
+app.post(['/api/users/login', '/users/login'], async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const user = await User.findOne({ email: email.toLowerCase().trim() });
+        if (!user) return res.status(401).json({ success: false, message: "User not found" });
+        if (user.role !== 'admin' && !user.isApproved) return res.status(403).json({ success: false, message: "Account pending approval." });
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) return res.status(401).json({ success: false, message: "Invalid credentials" });
+        const token = jwt.sign({ userId: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+        res.json({ success: true, token, user: { id: user._id, name: user.name, role: user.role, package: user.package, viewLimit: user.viewLimit, gender: user.gender } });
+    } catch (err) { res.status(500).json({ error: "Server Error" }); }
+});
+
+app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
+    try {
+        const { password, email, package: pkg } = req.body;
+        const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+        const userImages = req.files['images'] ? req.files['images'].map(f => f.filename) : [];
+        const screenshot = req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].filename : null;
+        const limits = { 'Basic Plan': 3, 'Gold Plan': 10, 'Diamond Plan': 999999 };
+        const newUser = new User({ ...req.body, email: email.toLowerCase().trim(), password: hashedPassword, viewLimit: limits[pkg] || 3, images: userImages, paymentScreenshot: screenshot, isApproved: false, role: 'user' });
+        await newUser.save();
+        res.json({ success: true, message: "Registered! Waiting approval." });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post(['/api/users/unlock-profile', '/users/unlock-profile'], authMiddleware, async (req, res) => {
     try {
         const { profileId } = req.body;
         const user = await User.findById(req.user.userId);
