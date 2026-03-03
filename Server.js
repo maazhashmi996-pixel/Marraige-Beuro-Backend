@@ -36,6 +36,7 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Body parser limits increased for Base64 images
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -46,7 +47,7 @@ if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 /* ================= HELPERS ================= */
 const getFullUrl = (req, imgPath) => {
     if (!imgPath || imgPath === "undefined" || imgPath === "null") return "";
-    if (imgPath.startsWith('http')) return imgPath;
+    if (imgPath.startsWith('http') || imgPath.startsWith('data:image')) return imgPath;
     const fileName = path.basename(imgPath);
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const baseUrl = `${protocol}://${req.get('host')}`;
@@ -112,7 +113,7 @@ const authMiddleware = (req, res, next) => {
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
 };
 
-/* ================= MATCHES ROUTE (CRITICAL FIX) ================*/
+/* ================= MATCHES ROUTE ================*/
 app.get(['/api/users/matches', '/users/matches'], async (req, res) => {
     try {
         let currentUser = null;
@@ -166,12 +167,18 @@ app.post(['/api/setup/admin-init', '/setup/admin-init'], async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// FIXED MANUAL PROFILE HANDLER
 const manualProfileHandler = async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
-        const { email, password } = req.body;
+
+        const { email, password, mainImage, gallery } = req.body;
+
+        if (!email) return res.status(400).json({ success: false, message: "Email is required" });
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
+
         const newUser = new User({
             ...req.body,
             email: email.toLowerCase().trim(),
@@ -180,15 +187,12 @@ const manualProfileHandler = async (req, res) => {
             role: 'user'
         });
         const savedUser = await newUser.save();
-        let profileImages = [];
-        if (req.files && req.files['images']) {
-            profileImages = req.files['images'].map(f => f.filename);
-        }
+
         const newProfile = new Profile({
             ...req.body,
             userId: savedUser._id,
-            mainImage: profileImages[0] || "",
-            gallery: profileImages
+            mainImage: mainImage || "",
+            gallery: gallery || []
         });
         await newProfile.save();
         res.status(200).json({ success: true, message: "✅ Profile Created Manually!" });
@@ -197,7 +201,8 @@ const manualProfileHandler = async (req, res) => {
     }
 };
 
-app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), manualProfileHandler);
+// REMOVED MULTER FROM MANUAL ROUTE TO FIX 500 ERROR
+app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware, manualProfileHandler);
 
 app.put(['/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
     try {
