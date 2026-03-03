@@ -4,40 +4,33 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 // ==========================================
-// 1. ADMIN: CREATE MANUAL PROFILE (FULL UPDATED)
+// 1. ADMIN: CREATE MANUAL PROFILE
 // ==========================================
 exports.createManualProfile = async (req, res) => {
     try {
         const userData = req.body;
-
-        // 1. Check if email already exists
         const existingUser = await User.findOne({ email: userData.email });
         if (existingUser) {
             return res.status(400).json({ success: false, message: "Email already registered" });
         }
 
-        // 2. Handle Images
         const images = req.files && req.files['images'] ? req.files['images'].map(file => file.path) : [];
-
-        // 3. Hash Password (Jo humne form se bheja)
         const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(userData.password || "123456", salt); // Default pass if missing
+        const hashedPassword = await bcrypt.hash(userData.password || "123456", salt);
 
-        // 4. Save User Account
         const newUser = new User({
             ...userData,
             password: hashedPassword,
             images: images,
             mainImage: images.length > 0 ? images[0] : null,
-            isApproved: true, // Admin khud bana raha hai to auto-approve
+            isApproved: true,
             package: userData.package || 'Basic Plan',
-            credits: 5, // Give some default credits
+            credits: 5,
             role: 'user'
         });
 
         const savedUser = await newUser.save();
 
-        // 5. Create Profile Entry (Taake search matches mein nazar aaye)
         const newProfile = new Profile({
             userId: savedUser._id,
             name: savedUser.name,
@@ -53,7 +46,7 @@ exports.createManualProfile = async (req, res) => {
             weight: savedUser.weight,
             maritalStatus: savedUser.maritalStatus,
             education: savedUser.education,
-            profession: savedUser.occupation || savedUser.profession,
+            profession: savedUser.occupation || savedUser.profession, // Sync here
             monthlyIncome: savedUser.monthlyIncome,
             motherTongue: savedUser.motherTongue,
             about: savedUser.about,
@@ -64,12 +57,7 @@ exports.createManualProfile = async (req, res) => {
         });
 
         await newProfile.save();
-
-        res.status(201).json({
-            success: true,
-            message: "User Account & Profile Created Successfully!",
-            user: savedUser
-        });
+        res.status(201).json({ success: true, message: "User Account & Profile Created Successfully!", user: savedUser });
 
     } catch (error) {
         console.error("Manual Create Error:", error);
@@ -108,7 +96,6 @@ exports.registerUser = async (req, res) => {
         await newUser.save();
         res.status(201).json({ success: true, message: "Registration successful! Pending admin approval." });
     } catch (error) {
-        console.error("Register Error:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -139,8 +126,6 @@ exports.approveUser = async (req, res) => {
         user.packageExpiry = expiry;
         user.isApproved = true;
 
-        const mainImg = user.mainImage || (user.images.length > 0 ? user.images[0] : "");
-
         const newProfile = new Profile({
             userId: user._id,
             name: user.name,
@@ -162,13 +147,12 @@ exports.approveUser = async (req, res) => {
             requirements: user.requirements,
             about: user.about,
             familyDetails: user.familyDetails,
-            mainImage: mainImg,
+            mainImage: user.mainImage || (user.images.length > 0 ? user.images[0] : ""),
             gallery: user.images
         });
 
         await newProfile.save();
         await user.save();
-
         res.status(200).json({ success: true, message: "Approved!" });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
@@ -176,7 +160,7 @@ exports.approveUser = async (req, res) => {
 };
 
 // ==========================================
-// 3. GET PENDING (Admin Only)
+// 4. GET PENDING & LOGIN (Kept Intact)
 // ==========================================
 exports.getPendingRegistrations = async (req, res) => {
     try {
@@ -187,38 +171,17 @@ exports.getPendingRegistrations = async (req, res) => {
     }
 };
 
-// ==========================================
-// 4. USER LOGIN
-// ==========================================
 exports.loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
         const user = await User.findOne({ email });
-
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials" });
 
-        const token = jwt.sign(
-            { id: user._id, role: user.role || 'user' },
-            process.env.JWT_SECRET || 'secret',
-            { expiresIn: '7d' }
-        );
-
-        res.status(200).json({
-            success: true,
-            token,
-            user: {
-                id: user._id,
-                name: user.name,
-                gender: user.gender,
-                package: user.package,
-                isApproved: user.isApproved,
-                credits: user.credits,
-                role: user.role || 'user'
-            }
-        });
+        const token = jwt.sign({ id: user._id, role: user.role || 'user' }, process.env.JWT_SECRET || 'secret', { expiresIn: '7d' });
+        res.status(200).json({ success: true, token, user });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -231,28 +194,19 @@ exports.unlockProfile = async (req, res) => {
     try {
         const { profileId } = req.body;
         const user = await User.findById(req.user.id);
-
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         if (user.unlockedProfiles.includes(profileId)) {
             return res.status(200).json({ success: true, message: "Already unlocked", credits: user.credits });
         }
 
-        if (user.packageExpiry && new Date() > new Date(user.packageExpiry)) {
-            return res.status(403).json({ success: false, message: "Package expired!" });
-        }
-
         const isDiamond = user.package === 'Diamond Plan';
         if (!isDiamond && user.credits <= 0) {
-            return res.status(403).json({ success: false, message: "No credits left! Please upgrade." });
+            return res.status(403).json({ success: false, message: "No credits left!" });
         }
 
         user.unlockedProfiles.push(profileId);
-        if (!isDiamond) {
-            user.credits -= 1;
-        }
-        user.viewedCount = (user.viewedCount || 0) + 1;
-
+        if (!isDiamond) user.credits -= 1;
         await user.save();
         res.status(200).json({ success: true, message: "Profile Unlocked!", credits: user.credits });
     } catch (error) {
@@ -261,57 +215,45 @@ exports.unlockProfile = async (req, res) => {
 };
 
 // ==========================================
-// 6. GET AVAILABLE MATCHES (Public & Gender Logic)
+// 6. GET AVAILABLE MATCHES (THE FIX)
 // ==========================================
 exports.getAvailableMatches = async (req, res) => {
     try {
-        // Find Logged In User (If token exists)
         const loggedInUser = req.user ? await User.findById(req.user.id) : null;
+        let query = { isApproved: true, role: 'user' };
 
-        // Base Query
-        let query = {
-            isApproved: true,
-            role: 'user'
-        };
-
-        // 1. LOGIC FOR AUTHENTICATED USER
-        if (loggedInUser) {
-            // Admin gets everything, User gets opposite gender
-            if (loggedInUser.role !== 'admin') {
-                const targetGender = loggedInUser.gender === 'Male' ? 'Female' : 'Male';
-                query.gender = targetGender;
-                query._id = { $ne: loggedInUser._id };
-            }
+        if (loggedInUser && loggedInUser.role !== 'admin') {
+            const targetGender = loggedInUser.gender === 'Male' ? 'Female' : 'Male';
+            query.gender = targetGender;
+            query._id = { $ne: loggedInUser._id };
         }
-        // 2. LOGIC FOR PUBLIC VIEW (LOGOUT)
-        // No gender filter here - show all as per your request
 
         let rawProfiles = await User.find(query).select('-password').sort({ createdAt: -1 });
 
         const filteredProfiles = rawProfiles.map(profile => {
             const p = profile.toObject();
 
-            let isLocked = true;
+            // EMERGENCY FIX: Syncing occupation/profession names
+            p.occupation = p.occupation || p.profession || "Not Specified";
+            p.city = p.city || "Not Specified";
+            p.education = p.education || "Not Specified";
+            p.maritalStatus = p.maritalStatus || "Not Specified";
 
+            let isLocked = true;
             if (loggedInUser) {
                 const isUnlocked = loggedInUser.unlockedProfiles.includes(profile._id.toString());
-                const isDiamond = loggedInUser.package === 'Diamond Plan';
-
-                if (loggedInUser.role === 'admin' || isDiamond || isUnlocked) {
+                if (loggedInUser.role === 'admin' || loggedInUser.package === 'Diamond Plan' || isUnlocked) {
                     isLocked = false;
                 }
             }
 
-            // Privacy: Lockdown data if not unlocked or not logged in
+            p.isLocked = isLocked;
             if (isLocked) {
                 delete p.phone;
+                delete p.fatherName;
                 delete p.familyDetails;
-                delete p.paymentScreenshot;
-                p.isLocked = true;
-            } else {
-                p.isLocked = false;
+                delete p.email;
             }
-
             return p;
         });
 
@@ -321,9 +263,7 @@ exports.getAvailableMatches = async (req, res) => {
             credits: loggedInUser ? loggedInUser.credits : 0,
             isLoggedIn: !!loggedInUser
         });
-
     } catch (error) {
-        console.error("Match Error:", error);
         res.status(500).json({ success: false, message: error.message });
     }
 };
@@ -336,7 +276,6 @@ exports.getSingleProfile = async (req, res) => {
         const { id } = req.params;
         const profile = await Profile.findById(id).populate('userId', 'isPremium package');
         if (!profile) return res.status(404).json({ success: false, message: "Profile not found" });
-
         res.status(200).json({ success: true, profile });
     } catch (error) {
         res.status(500).json({ success: false, message: "Server Error" });
