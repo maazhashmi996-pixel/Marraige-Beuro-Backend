@@ -325,7 +325,7 @@ app.post('/users/register', upload.fields([{ name: 'images', maxCount: 10 }, { n
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('api/users/matches', async (req, res) => {
+app.get('/api/users/matches', async (req, res) => {
     try {
         let currentUser = null;
         const authHeader = req.headers.authorization;
