@@ -31,7 +31,8 @@ const UserSchema = new mongoose.Schema({
     houseSize: { type: String },
     about: { type: String },
     requirements: { type: String },
-    familyDetail: { type: String },
+    mainImage: { type: String },
+    familyDetails: { type: String },
 
     // --- 4. Payment & Images (Old Logic) ---
     price: { type: String },
