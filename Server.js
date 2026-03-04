@@ -203,7 +203,7 @@ app.get(['/api/users/matches', '/users/matches'], async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Fetch Error" }); }
 });
 
-// ✅ 2. ADMIN: MANUAL PROFILE CREATION (FIXED FOR NEW USERS)
+// ✅ 2. ADMIN: MANUAL PROFILE CREATION
 app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware, upload.fields([{ name: 'images', maxCount: 10 }]), async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -217,8 +217,9 @@ app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware,
 
         const newUser = new User({
             ...restData,
+            age: restData.age ? Number(restData.age) : null,
             package: pkg || 'Basic Plan',
-            viewLimit: getPackageLimit(pkg || 'Basic Plan'), // 🔥 DIRECT ASSIGN
+            viewLimit: getPackageLimit(pkg || 'Basic Plan'),
             email: email.toLowerCase().trim(),
             password: hashedPassword,
             isApproved: true,
@@ -233,6 +234,7 @@ app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware,
 
         const newProfile = new Profile({
             ...restData,
+            age: restData.age ? Number(restData.age) : null,
             package: pkg || 'Basic Plan',
             userId: savedUser._id,
             mainImage: profileImages[0] || "",
@@ -244,7 +246,7 @@ app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware,
     } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
 
-// ✅ 3. ADMIN: APPROVE USER (FIXED)
+// ✅ 3. ADMIN: APPROVE USER
 app.put(['/api/admin/approve/:userId', '/admin/approve/:userId'], authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
@@ -252,7 +254,7 @@ app.put(['/api/admin/approve/:userId', '/admin/approve/:userId'], authMiddleware
         const user = await User.findById(req.params.userId);
         if (!user) return res.status(404).json({ message: "User not found" });
 
-        user.viewLimit = getPackageLimit(user.package); // 🔥 RE-SYNC ON APPROVAL
+        user.viewLimit = getPackageLimit(user.package);
         user.isApproved = true;
         await user.save();
 
@@ -296,30 +298,39 @@ app.post(['/api/users/unlock-profile', '/users/unlock-profile'], authMiddleware,
     } catch (err) { res.status(500).json({ success: false, message: "Server error" }); }
 });
 
-// ✅ 5. USER: REGISTRATION (FIXED FOR NEW USERS)
+// ✅ 5. USER: REGISTRATION (FIXED & SAFE)
 app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
-        const { password, email, package: pkg } = req.body;
+        const { password, email, package: pkg, age } = req.body;
+
         const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
         if (existingEmail) return res.status(400).json({ success: false, message: "Email already registered!" });
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
+        // Safe File Handling
+        const userImages = (req.files && req.files['images']) ? req.files['images'].map(f => f.filename) : [];
+        const screenshot = (req.files && req.files['paymentScreenshot']) ? req.files['paymentScreenshot'][0].filename : null;
+
         const newUser = new User({
             ...req.body,
+            age: age ? Number(age) : null, // Convert string to number
             email: email.toLowerCase().trim(),
             password: hashedPassword,
-            viewLimit: getPackageLimit(pkg), // 🔥 FORAN CREDITS ASSIGN
-            images: req.files['images'] ? req.files['images'].map(f => f.filename) : [],
-            paymentScreenshot: req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].filename : null,
+            viewLimit: getPackageLimit(pkg),
+            images: userImages,
+            paymentScreenshot: screenshot,
             isApproved: false,
             role: 'user'
         });
 
         await newUser.save();
         res.json({ success: true, message: "Registered successfully! Waiting for admin approval." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+    } catch (err) {
+        console.error("Registration Error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
 });
 
 // ✅ 6. USER: LOGIN
@@ -377,16 +388,13 @@ app.delete(['/api/admin/registration/:id', '/api/admin/profile/:id'], authMiddle
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
 
-        // Find by ID directly
         const user = await User.findById(id);
         const profile = await Profile.findById(id);
 
         let uId = user ? user._id : null;
         let pId = profile ? profile._id : null;
 
-        // If it's a profile ID, find associated User
         if (profile && !uId) uId = profile.userId;
-        // If it's a user ID, find associated Profile
         if (user && !pId) {
             const linkedP = await Profile.findOne({ userId: user._id });
             if (linkedP) pId = linkedP._id;
