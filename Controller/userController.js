@@ -46,7 +46,7 @@ exports.createManualProfile = async (req, res) => {
             weight: savedUser.weight,
             maritalStatus: savedUser.maritalStatus,
             education: savedUser.education,
-            profession: savedUser.occupation || savedUser.profession, // Sync here
+            occupation: savedUser.occupation || savedUser.profession, // Sync here
             monthlyIncome: savedUser.monthlyIncome,
             motherTongue: savedUser.motherTongue,
             about: savedUser.about,
@@ -215,7 +215,7 @@ exports.unlockProfile = async (req, res) => {
 };
 
 // ==========================================
-// 6. GET AVAILABLE MATCHES (THE FIX)
+// 6. GET AVAILABLE MATCHES (UPDATED FOR PUBLIC DATA)
 // ==========================================
 exports.getAvailableMatches = async (req, res) => {
     try {
@@ -233,9 +233,12 @@ exports.getAvailableMatches = async (req, res) => {
         const filteredProfiles = rawProfiles.map(profile => {
             const p = profile.toObject();
 
-            // EMERGENCY FIX: Syncing occupation/profession names
-            p.occupation = p.occupation || p.profession || "Not Specified";
+            // PUBLIC DATA SYNC: In cheezon ko humne hamesha dikhana hai
+            p.name = p.name || p.title || "Member";
+            p.age = p.age || "N/A";
+            p.gender = p.gender || "Not Specified";
             p.city = p.city || "Not Specified";
+            p.occupation = p.occupation || p.profession || "Not Specified";
             p.education = p.education || "Not Specified";
             p.maritalStatus = p.maritalStatus || "Not Specified";
 
@@ -248,11 +251,16 @@ exports.getAvailableMatches = async (req, res) => {
             }
 
             p.isLocked = isLocked;
+
+            // Sirf sensitive data delete karein, public fields nahi
             if (isLocked) {
                 delete p.phone;
                 delete p.fatherName;
                 delete p.familyDetails;
                 delete p.email;
+                delete p.address;
+                // Income ko bhi private rakhna hai toh niche wali line uncomment karein
+                // delete p.monthlyIncome; 
             }
             return p;
         });
