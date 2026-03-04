@@ -89,7 +89,7 @@ router.put('/approve/:id', authMiddleware, async (req, res) => {
             weight: user.weight,
             maritalStatus: user.maritalStatus,
             education: user.education,
-            profession: user.occupation,
+            occupation: user.occupation,
             monthlyIncome: user.monthlyIncome,
             motherTongue: user.motherTongue,
             disability: user.disability,
@@ -158,7 +158,7 @@ router.post('/create-profile', authMiddleware, upload.array('images', 5), async 
             mainImage: imageUrls[0] || "",
             gallery: imageUrls,
             nationality: req.body.nationality || "Pakistani",
-            profession: req.body.occupation || req.body.profession // Dono handle kar liye
+            occupation: req.body.occupation || req.body.occupation // Dono handle kar liye
         });
 
         await newProfile.save();
