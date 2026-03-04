@@ -107,17 +107,17 @@ const userSchema = new mongoose.Schema({
 });
 
 // 🔥 Pre-save backup logic (FIXED)
-userSchema.pre('save', function (next) {
+userSchema.pre('save', async function () {
     try {
         if (this.isModified('package') || this.isNew) {
+            // Hum directly value assign kar rahe hain, Mongoose khud handle kar lega
             this.viewLimit = getPackageLimit(this.package);
         }
-        next();
     } catch (err) {
-        next(err);
+        // Agar koi error aaye toh throw karein taake save ruk jaye
+        throw err;
     }
 });
-
 const Profile = mongoose.model('Profile', profileSchema);
 const User = mongoose.model('User', userSchema);
 
