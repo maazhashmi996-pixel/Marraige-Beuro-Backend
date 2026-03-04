@@ -108,10 +108,14 @@ const userSchema = new mongoose.Schema({
 
 // Pre-save backup logic
 userSchema.pre('save', function (next) {
-    if (this.isModified('package') || this.isNew) {
-        this.viewLimit = getPackageLimit(this.package);
+    try {
+        if (this.isModified('package') || this.isNew) {
+            this.viewLimit = getPackageLimit(this.package);
+        }
+        next(); // Ye next() ab sahi kaam karega
+    } catch (err) {
+        next(err);
     }
-    next();
 });
 
 const Profile = mongoose.model('Profile', profileSchema);
