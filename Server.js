@@ -106,13 +106,13 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: 'user' }
 });
 
-// Pre-save backup logic
+// 🔥 Pre-save backup logic (FIXED)
 userSchema.pre('save', function (next) {
     try {
         if (this.isModified('package') || this.isNew) {
             this.viewLimit = getPackageLimit(this.package);
         }
-        next(); // Ye next() ab sahi kaam karega
+        next();
     } catch (err) {
         next(err);
     }
@@ -319,7 +319,7 @@ app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'ima
 
         const newUser = new User({
             ...req.body,
-            age: age ? Number(age) : null, // Convert string to number
+            age: age ? Number(age) : null,
             email: email.toLowerCase().trim(),
             password: hashedPassword,
             viewLimit: getPackageLimit(pkg),
