@@ -387,7 +387,7 @@ app.get(['/api/admin/registrations', '/admin/registrations'], authMiddleware, as
 });
 
 // ✅ 10. ADMIN: DELETE
-app.delete(['/api/admin/registration/:id', '/api/admin/profile/:id'], authMiddleware, async (req, res) => {
+app.delete(['/api/admin/registration/:id', '/admin/registration/:id', '/api/admin/profile/:id', '/admin/profile/:id'], authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
