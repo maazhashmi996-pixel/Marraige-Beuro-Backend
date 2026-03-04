@@ -71,17 +71,31 @@ exports.createManualProfile = async (req, res) => {
 exports.registerUser = async (req, res) => {
     try {
         const userData = req.body;
-        const existingUser = await User.findOne({ email: userData.email });
+
+        // 1. Basic Validation (Is se 500 error ruk jayega)
+        if (!userData.email || !userData.password) {
+            return res.status(400).json({ success: false, message: "Email and Password are required!" });
+        }
+
+        const existingUser = await User.findOne({ email: userData.email.toLowerCase() });
         if (existingUser) {
             return res.status(400).json({ success: false, message: "Email already registered" });
         }
 
+        // 2. Safely handle files (taake undefined error na aaye)
         const images = req.files && req.files['images'] ? req.files['images'].map(file => file.path) : [];
-        const screenshot = req.files && req.files['paymentScreenshot'] ? req.files['paymentScreenshot'][0].path : null;
 
+        // Screenshot check
+        let screenshot = null;
+        if (req.files && req.files['paymentScreenshot'] && req.files['paymentScreenshot'][0]) {
+            screenshot = req.files['paymentScreenshot'][0].path;
+        }
+
+        // 3. Safe Hashing
         const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(userData.password, salt);
+        const hashedPassword = await bcrypt.hash(userData.password.toString(), salt);
 
+        // 4. Create User with Schema matching fields
         const newUser = new User({
             ...userData,
             password: hashedPassword,
@@ -89,17 +103,18 @@ exports.registerUser = async (req, res) => {
             mainImage: images.length > 0 ? images[0] : null,
             paymentScreenshot: screenshot,
             isApproved: false,
-            credits: 0,
+            viewLimit: 0, // Schema mein viewLimit hai, credits nahi
             unlockedProfiles: []
         });
 
         await newUser.save();
         res.status(201).json({ success: true, message: "Registration successful! Pending admin approval." });
+
     } catch (error) {
+        console.error("REGISTER ERROR:", error); // Railway logs mein check karein
         res.status(500).json({ success: false, message: error.message });
     }
 };
-
 // ==========================================
 // 3. APPROVE USER
 // ==========================================
