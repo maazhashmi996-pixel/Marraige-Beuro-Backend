@@ -13,6 +13,8 @@ const { upload } = require('../config/cloudinary');
 // 1. Get Registrations
 router.get('/registrations', authMiddleware, async (req, res) => {
     try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+
         const { range } = req.query;
         let startDate = new Date(0);
         const now = new Date();
@@ -21,7 +23,12 @@ router.get('/registrations', authMiddleware, async (req, res) => {
         else if (range === 'week') { startDate = new Date(now.setDate(now.getDate() - 7)); }
         else if (range === 'month') { startDate = new Date(now.setMonth(now.getMonth() - 1)); }
 
-        const users = await User.find({ createdAt: { $gte: startDate } }).sort({ createdAt: -1 });
+        const users = await User.find({
+            role: 'user',
+            isApproved: false,
+            createdAt: { $gte: startDate }
+        }).sort({ createdAt: -1 });
+
         res.json(users);
     } catch (err) {
         console.error("Fetch Registrations Error:", err);
@@ -32,6 +39,7 @@ router.get('/registrations', authMiddleware, async (req, res) => {
 // 2. Get All Public Profiles
 router.get('/profiles', authMiddleware, async (req, res) => {
     try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const profiles = await Profile.find().sort({ createdAt: -1 });
         res.json(profiles);
     } catch (err) {
@@ -42,21 +50,23 @@ router.get('/profiles', authMiddleware, async (req, res) => {
 // 3. APPROVE USER (Manual Registration Approval)
 router.put('/approve/:id', authMiddleware, async (req, res) => {
     try {
-        const { packageType } = req.body;
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+
+        const { package: pkg } = req.body;
         const user = await User.findById(req.params.id);
 
         if (!user) return res.status(404).json({ message: "User nahi mila" });
         if (user.isApproved) return res.status(400).json({ message: "User pehle se approved hai" });
 
-        let limit = 0;
-        if (packageType === 'Basic') limit = 3;
-        else if (packageType === 'Gold') limit = 10;
-        else if (packageType === 'Diamond') limit = 1000;
+        const getPkgLimit = (p) => {
+            if (p === 'Gold Plan' || p === 'Gold') return 10;
+            if (p === 'Diamond Plan' || p === 'Diamond') return 9999;
+            return 3;
+        };
 
         const expiry = new Date();
         expiry.setMonth(expiry.getMonth() + 3);
 
-        // Images already Cloudinary URLs hain agar registration ke waqt upload hui thin
         const mainImg = user.images && user.images.length > 0 ? user.images[0] : "";
         const galleryImgs = user.images && user.images.length > 0 ? user.images : [];
 
@@ -86,63 +96,70 @@ router.put('/approve/:id', authMiddleware, async (req, res) => {
             about: user.about,
             familyDetails: user.familyDetails,
             mainImage: mainImg,
-            gallery: galleryImgs
+            gallery: galleryImgs,
+            package: pkg || user.package || 'Basic Plan'
         });
 
         await newProfile.save();
 
         user.isApproved = true;
-        user.packageType = packageType || 'Basic';
-        user.viewLimit = limit;
+        user.package = pkg || user.package || 'Basic Plan';
+        user.viewLimit = getPkgLimit(user.package);
         user.viewedCount = 0;
         user.expiryDate = expiry;
-        user.unlockedProfiles = [];
+        user.viewedProfiles = [];
 
         await user.save();
 
-        res.json({ success: true, message: `User Approved as ${packageType}!`, profile: newProfile });
+        res.json({ success: true, message: `User Approved as ${user.package}!`, profile: newProfile });
     } catch (err) {
         res.status(500).json({ message: "Approval process mein masla aaya", error: err.message });
     }
 });
 
 // 4. CREATE PROFILE & USER ACCOUNT (Manual Admin Entry with Cloudinary)
-router.post('/create-profile', authMiddleware, upload.array('images', 5), async (req, res) => {
+router.post('/create-profile', authMiddleware, upload.array('images', 10), async (req, res) => {
     try {
-        const { email, password } = req.body;
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
 
-        // 1. Check if Email already exists
-        const existingUser = await User.findOne({ email });
+        const { email, password, package: pkg } = req.body;
+
+        const existingUser = await User.findOne({ email: email.toLowerCase().trim() });
         if (existingUser) {
             return res.status(400).json({ message: "Ye Email pehle se registered hai." });
         }
 
-        // 2. Hash Password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
 
-        // 3. Handle Images (Cloudinary directly provides the path/URL)
         const files = req.files;
         const imageUrls = files ? files.map(file => file.path) : [];
 
-        // 4. Create User Account
+        const getPkgLimit = (p) => {
+            if (p === 'Gold Plan' || p === 'Gold') return 10;
+            if (p === 'Diamond Plan' || p === 'Diamond') return 9999;
+            return 3;
+        };
+
         const newUser = new User({
             ...req.body,
+            email: email.toLowerCase().trim(),
             password: hashedPassword,
             images: imageUrls,
-            isApproved: true, // Admin khud bana raha hai to direct approve
-            packageType: req.body.packageType || 'Basic',
-            viewLimit: req.body.packageType === 'Gold' ? 10 : (req.body.packageType === 'Diamond' ? 1000 : 5),
-            expiryDate: new Date(new Date().setMonth(new Date().getMonth() + 3))
+            isApproved: true,
+            package: pkg || 'Basic Plan',
+            viewLimit: getPkgLimit(pkg || 'Basic Plan'),
+            expiryDate: new Date(new Date().setMonth(new Date().getMonth() + 3)),
+            role: 'user'
         });
         const savedUser = await newUser.save();
 
-        // 5. Create Public Profile
         const newProfile = new Profile({
-            userId: savedUser._id,
             ...req.body,
+            userId: savedUser._id,
             mainImage: imageUrls[0] || "",
             gallery: imageUrls,
+            package: pkg || 'Basic Plan',
             nationality: req.body.nationality || "Pakistani",
             title: `${req.body.caste || 'New'} Rishta - ${req.body.city || 'Pakistan'}`
         });
@@ -164,11 +181,14 @@ router.post('/create-profile', authMiddleware, upload.array('images', 5), async 
 // 5. Delete Profile & Linked User
 router.delete('/profile/:id', authMiddleware, async (req, res) => {
     try {
+        if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
+
         const profile = await Profile.findById(req.params.id);
         if (!profile) return res.status(404).json({ message: "Profile nahi mili" });
 
-        // User aur Profile dono delete kar rahe hain
-        await User.findByIdAndDelete(profile.userId);
+        if (profile.userId) {
+            await User.findByIdAndDelete(profile.userId);
+        }
         await Profile.findByIdAndDelete(req.params.id);
 
         res.json({ success: true, message: "User and Profile Deleted Successfully" });
