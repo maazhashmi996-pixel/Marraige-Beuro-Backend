@@ -46,7 +46,7 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 /* ================= HELPERS ================= */
 const getFullUrl = (req, imgPath) => {
     if (!imgPath || imgPath === "undefined" || imgPath === "null") return "";
-    return imgPath;
+    return imgPath; // Cloudinary directly provides full https URL
 };
 
 const getPackageLimit = (pkgName) => {
@@ -59,7 +59,7 @@ const getPackageLimit = (pkgName) => {
     return limits[pkgName] || 3;
 };
 
-/* ================= SCHEMAS ================= */
+/* ================= SCHEMAS & MODELS ================= */
 const sharedFields = {
     name: String, fatherName: String, phone: String, age: Number, gender: String,
     city: String, caste: String, sect: String, monthlyIncome: String,
@@ -112,6 +112,7 @@ async function fixExistingUsersForcefully() {
         for (let user of usersToFix) {
             await User.updateOne({ _id: user._id }, { $set: { viewLimit: getPackageLimit(user.package) } });
         }
+        if (usersToFix.length > 0) console.log(`🛠️ System: Fixed ${usersToFix.length} legacy users.`);
     } catch (e) { console.log("Fix script error:", e); }
 }
 
@@ -126,11 +127,11 @@ const authMiddleware = (req, res, next) => {
     } catch (err) { return res.status(401).json({ success: false, message: "Invalid token" }); }
 };
 
-/* ================= ROUTES (ALL IN ONE) ================= */
+/* ================= ROUTES ================= */
 
 app.get('/', (req, res) => res.send('Assan Rishta API is Running...'));
 
-// ✅ SETUP: ADMIN INITIALIZATION (FIXED 404)
+// ✅ SETUP: ADMIN INITIALIZATION
 app.post('/api/setup/admin-init', async (req, res) => {
     try {
         const { email, password, name } = req.body;
@@ -268,11 +269,15 @@ app.get('/api/admin/registrations', authMiddleware, async (req, res) => {
     } catch (err) { res.status(500).json({ error: "Fetch failed" }); }
 });
 
-// ✅ ADMIN: MANUAL CREATE
-router.post('/api/admin/profile/manual', authMiddleware, upload.array('images', 10), async (req, res) => {
+// ✅ ADMIN: MANUAL CREATE (Fixed Route Name)
+app.post('/api/admin/profile/manual', authMiddleware, upload.array('images', 10), async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const { email, password, package: pkg } = req.body;
+
+        const existing = await User.findOne({ email: email.toLowerCase().trim() });
+        if (existing) return res.status(400).json({ success: false, message: "Email already exists" });
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
         const imageUrls = req.files ? req.files.map(file => file.path) : [];
@@ -281,7 +286,7 @@ router.post('/api/admin/profile/manual', authMiddleware, upload.array('images', 
         const savedUser = await newUser.save();
         const newProfile = new Profile({ ...req.body, userId: savedUser._id, mainImage: imageUrls[0] || "", gallery: imageUrls });
         await newProfile.save();
-        res.json({ success: true, message: "Profile Created!" });
+        res.json({ success: true, message: "Profile Created Successfully!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -290,6 +295,8 @@ app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const user = await User.findById(req.params.userId);
+        if (!user) return res.status(404).json({ message: "User not found" });
+
         user.viewLimit = getPackageLimit(user.package);
         user.isApproved = true;
         await user.save();
@@ -297,23 +304,34 @@ app.put('/api/admin/approve/:userId', authMiddleware, async (req, res) => {
         let profile = await Profile.findOne({ userId: user._id });
         const profileData = { userId: user._id, ...user.toObject(), mainImage: user.images[0] || "", gallery: user.images || [] };
         delete profileData._id;
-        if (!profile) profile = new Profile(profileData); else Object.assign(profile, profileData);
+
+        if (!profile) profile = new Profile(profileData);
+        else Object.assign(profile, profileData);
+
         await profile.save();
-        res.json({ success: true, message: "User Approved!" });
+        res.json({ success: true, message: "User Approved and Profile Sync!" });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ✅ ADMIN: DELETE
+// ✅ ADMIN: DELETE (Registration or Profile)
 app.delete(['/api/admin/registration/:id', '/api/admin/profile/:id'], authMiddleware, async (req, res) => {
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
+
+        // Try to find if it's a User ID or Profile ID
         const user = await User.findById(id);
         const profile = await Profile.findById(id);
-        let uId = user ? user._id : (profile ? profile.userId : null);
-        if (uId) await User.findByIdAndDelete(uId);
-        await Profile.findOneAndDelete({ userId: uId });
-        res.json({ success: true, message: "Deleted!" });
+
+        let targetUserId = user ? user._id : (profile ? profile.userId : null);
+
+        if (targetUserId) {
+            await User.findByIdAndDelete(targetUserId);
+            await Profile.findOneAndDelete({ userId: targetUserId });
+            res.json({ success: true, message: "User and Profile Permanently Deleted!" });
+        } else {
+            res.status(404).json({ success: false, message: "Nothing found to delete" });
+        }
     } catch (err) { res.status(500).json({ error: "Delete failed" }); }
 });
 
