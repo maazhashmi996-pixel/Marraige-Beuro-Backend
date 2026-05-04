@@ -7,7 +7,7 @@ const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const compression = require('compression');
 
-// Cloudinary config file se import (Folder settings wahan already hain)
+// Cloudinary config file se import
 const { upload } = require('./config/cloudinary');
 
 dotenv.config();
@@ -129,7 +129,33 @@ const authMiddleware = (req, res, next) => {
 
 /* ================= ROUTES ================= */
 
-app.get('/', (req, res) => res.send('Assan Rishta API with Cloudinary Config is Running...'));
+app.get('/', (req, res) => res.send('Assan Rishta API is Running...'));
+
+// ✅ 0. SETUP: ADMIN INITIALIZATION (FIX FOR 404)
+app.post(['/api/setup/admin-init', '/setup/admin-init'], async (req, res) => {
+    try {
+        const { email, password, name } = req.body;
+        const existingAdmin = await User.findOne({ role: 'admin' });
+        if (existingAdmin) return res.status(400).json({ success: false, message: "Admin already exists" });
+
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password || "admin123", salt);
+
+        const admin = new User({
+            name: name || "Admin",
+            email: email.toLowerCase().trim(),
+            password: hashedPassword,
+            role: 'admin',
+            isApproved: true,
+            package: 'Diamond Plan'
+        });
+
+        await admin.save();
+        res.json({ success: true, message: "✅ Admin created successfully!" });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // ✅ 1. MATCHES FETCHING
 app.get(['/api/users/matches', '/users/matches'], async (req, res) => {
@@ -286,7 +312,6 @@ app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'ima
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Cloudinary URLs extracted from middleware
         const userImages = (req.files && req.files['images']) ? req.files['images'].map(f => f.path) : [];
         const screenshot = (req.files && req.files['paymentScreenshot']) ? req.files['paymentScreenshot'][0].path : null;
 
@@ -305,7 +330,6 @@ app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'ima
         await newUser.save();
         res.json({ success: true, message: "Registered successfully! Waiting for admin approval." });
     } catch (err) {
-        console.error("Registration Error:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -364,7 +388,6 @@ app.delete(['/api/admin/registration/:id', '/admin/registration/:id', '/api/admi
     try {
         if (req.user.role !== 'admin') return res.status(403).json({ message: "Access denied" });
         const id = req.params.id;
-
         const user = await User.findById(id);
         const profile = await Profile.findById(id);
 
