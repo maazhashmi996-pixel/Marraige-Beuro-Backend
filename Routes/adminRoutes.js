@@ -1,30 +1,16 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const bcrypt = require('bcryptjs'); // <--- Password hashing ke liye
+const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const Profile = require('../models/Profile');
 const authMiddleware = require('../middleware/authMiddleware');
 
-/* ================= MULTER STORAGE CONFIGURATION ================= */
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + '-' + file.originalname);
-    }
-});
-
-const upload = multer({
-    storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 }
-});
+// Cloudinary config aur multer yahan se aayega
+const { upload } = require('../config/cloudinary');
 
 /* ================= UPDATED ROUTES ================= */
 
-// 1. Get Registrations (Unchanged)
+// 1. Get Registrations
 router.get('/registrations', authMiddleware, async (req, res) => {
     try {
         const { range } = req.query;
@@ -43,7 +29,7 @@ router.get('/registrations', authMiddleware, async (req, res) => {
     }
 });
 
-// 2. Get All Public Profiles (Unchanged)
+// 2. Get All Public Profiles
 router.get('/profiles', authMiddleware, async (req, res) => {
     try {
         const profiles = await Profile.find().sort({ createdAt: -1 });
@@ -53,7 +39,7 @@ router.get('/profiles', authMiddleware, async (req, res) => {
     }
 });
 
-// 3. APPROVE USER (Unchanged)
+// 3. APPROVE USER (Manual Registration Approval)
 router.put('/approve/:id', authMiddleware, async (req, res) => {
     try {
         const { packageType } = req.body;
@@ -70,6 +56,7 @@ router.put('/approve/:id', authMiddleware, async (req, res) => {
         const expiry = new Date();
         expiry.setMonth(expiry.getMonth() + 3);
 
+        // Images already Cloudinary URLs hain agar registration ke waqt upload hui thin
         const mainImg = user.images && user.images.length > 0 ? user.images[0] : "";
         const galleryImgs = user.images && user.images.length > 0 ? user.images : [];
 
@@ -119,12 +106,12 @@ router.put('/approve/:id', authMiddleware, async (req, res) => {
     }
 });
 
-// 4. CREATE PROFILE & USER ACCOUNT (FULL UPDATED)
+// 4. CREATE PROFILE & USER ACCOUNT (Manual Admin Entry with Cloudinary)
 router.post('/create-profile', authMiddleware, upload.array('images', 5), async (req, res) => {
     try {
-        const { email, password, name, phone } = req.body;
+        const { email, password } = req.body;
 
-        // 1. Check if Email already exists in User table
+        // 1. Check if Email already exists
         const existingUser = await User.findOne({ email });
         if (existingUser) {
             return res.status(400).json({ message: "Ye Email pehle se registered hai." });
@@ -134,19 +121,18 @@ router.post('/create-profile', authMiddleware, upload.array('images', 5), async 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
 
-        // 3. Handle Images
+        // 3. Handle Images (Cloudinary directly provides the path/URL)
         const files = req.files;
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const imageUrls = files.map(file => `${baseUrl}/uploads/${file.filename}`);
+        const imageUrls = files ? files.map(file => file.path) : [];
 
-        // 4. Create User Account (Taake login ho sakay)
+        // 4. Create User Account
         const newUser = new User({
             ...req.body,
             password: hashedPassword,
             images: imageUrls,
-            isApproved: true, // Manual create hai to auto-approved
-            packageType: 'Basic',
-            viewLimit: 5,
+            isApproved: true, // Admin khud bana raha hai to direct approve
+            packageType: req.body.packageType || 'Basic',
+            viewLimit: req.body.packageType === 'Gold' ? 10 : (req.body.packageType === 'Diamond' ? 1000 : 5),
             expiryDate: new Date(new Date().setMonth(new Date().getMonth() + 3))
         });
         const savedUser = await newUser.save();
@@ -158,7 +144,7 @@ router.post('/create-profile', authMiddleware, upload.array('images', 5), async 
             mainImage: imageUrls[0] || "",
             gallery: imageUrls,
             nationality: req.body.nationality || "Pakistani",
-            occupation: req.body.occupation || req.body.occupation // Dono handle kar liye
+            title: `${req.body.caste || 'New'} Rishta - ${req.body.city || 'Pakistan'}`
         });
 
         await newProfile.save();
@@ -175,12 +161,17 @@ router.post('/create-profile', authMiddleware, upload.array('images', 5), async 
     }
 });
 
-// 5. Delete Profile (Unchanged)
+// 5. Delete Profile & Linked User
 router.delete('/profile/:id', authMiddleware, async (req, res) => {
     try {
-        const deletedProfile = await Profile.findByIdAndDelete(req.params.id);
-        if (!deletedProfile) return res.status(404).json({ message: "Profile nahi mili" });
-        res.json({ success: true, message: "Profile Deleted Successfully" });
+        const profile = await Profile.findById(req.params.id);
+        if (!profile) return res.status(404).json({ message: "Profile nahi mili" });
+
+        // User aur Profile dono delete kar rahe hain
+        await User.findByIdAndDelete(profile.userId);
+        await Profile.findByIdAndDelete(req.params.id);
+
+        res.json({ success: true, message: "User and Profile Deleted Successfully" });
     } catch (err) {
         res.status(500).json({ message: "Delete karne mein error aaya" });
     }

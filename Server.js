@@ -3,12 +3,12 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const compression = require('compression');
+
+// Cloudinary config file se import (Folder settings wahan already hain)
+const { upload } = require('./config/cloudinary');
 
 dotenv.config();
 const app = express();
@@ -42,22 +42,13 @@ app.use(cors({
 
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-const dir = './uploads';
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
 /* ================= HELPERS ================= */
 const getFullUrl = (req, imgPath) => {
     if (!imgPath || imgPath === "undefined" || imgPath === "null") return "";
-    if (imgPath.startsWith('http') || imgPath.startsWith('data:')) return imgPath;
-    const fileName = path.basename(imgPath);
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const baseUrl = `${protocol}://${req.get('host')}`;
-    return `${baseUrl}/uploads/${fileName}`;
+    return imgPath; // Cloudinary directly provides full https URL
 };
 
-// Credit Mapping Helper
 const getPackageLimit = (pkgName) => {
     const limits = {
         'Basic Plan': 3, 'Basic': 3,
@@ -71,7 +62,7 @@ const getPackageLimit = (pkgName) => {
 /* ================= MONGODB & FORCE FIX ================= */
 mongoose.connect(process.env.MONGO_URI)
     .then(async () => {
-        console.log("✅ MongoDB Connected!");
+        console.log("✅ MongoDB Connected & Cloudinary Ready!");
         await fixExistingUsersForcefully();
     })
     .catch(err => console.error("❌ DB Error:", err));
@@ -106,18 +97,12 @@ const userSchema = new mongoose.Schema({
     role: { type: String, default: 'user' }
 });
 
-// 🔥 Pre-save backup logic (FIXED)
 userSchema.pre('save', async function () {
-    try {
-        if (this.isModified('package') || this.isNew) {
-            // Hum directly value assign kar rahe hain, Mongoose khud handle kar lega
-            this.viewLimit = getPackageLimit(this.package);
-        }
-    } catch (err) {
-        // Agar koi error aaye toh throw karein taake save ruk jaye
-        throw err;
+    if (this.isModified('package') || this.isNew) {
+        this.viewLimit = getPackageLimit(this.package);
     }
 });
+
 const Profile = mongoose.model('Profile', profileSchema);
 const User = mongoose.model('User', userSchema);
 
@@ -130,16 +115,6 @@ async function fixExistingUsersForcefully() {
         if (usersToFix.length > 0) console.log(`🛠️ System: Fixed ${usersToFix.length} legacy users.`);
     } catch (e) { console.log("Fix script error:", e); }
 }
-
-/* ================= MULTER CONFIG ================= */
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, 'uploads/'),
-    filename: (req, file, cb) => {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname.replace(/\s/g, '_'));
-    }
-});
-const upload = multer({ storage: storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
 /* ================= AUTH MIDDLEWARE ================= */
 const authMiddleware = (req, res, next) => {
@@ -154,7 +129,7 @@ const authMiddleware = (req, res, next) => {
 
 /* ================= ROUTES ================= */
 
-app.get('/', (req, res) => res.send('Assan Rishta API is Running...'));
+app.get('/', (req, res) => res.send('Assan Rishta API with Cloudinary Config is Running...'));
 
 // ✅ 1. MATCHES FETCHING
 app.get(['/api/users/matches', '/users/matches'], async (req, res) => {
@@ -219,6 +194,8 @@ app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware,
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password || "123456", salt);
 
+        const cloudinaryImages = (req.files && req.files['images']) ? req.files['images'].map(f => f.path) : [];
+
         const newUser = new User({
             ...restData,
             age: restData.age ? Number(restData.age) : null,
@@ -226,23 +203,19 @@ app.post(['/api/admin/profile/manual', '/admin/profile/manual'], authMiddleware,
             viewLimit: getPackageLimit(pkg || 'Basic Plan'),
             email: email.toLowerCase().trim(),
             password: hashedPassword,
+            images: cloudinaryImages,
             isApproved: true,
             role: 'user'
         });
         const savedUser = await newUser.save();
-
-        let profileImages = [];
-        if (req.files && req.files['images']) {
-            profileImages = req.files['images'].map(f => f.filename);
-        }
 
         const newProfile = new Profile({
             ...restData,
             age: restData.age ? Number(restData.age) : null,
             package: pkg || 'Basic Plan',
             userId: savedUser._id,
-            mainImage: profileImages[0] || "",
-            gallery: profileImages
+            mainImage: cloudinaryImages[0] || "",
+            gallery: cloudinaryImages
         });
         await newProfile.save();
 
@@ -302,7 +275,7 @@ app.post(['/api/users/unlock-profile', '/users/unlock-profile'], authMiddleware,
     } catch (err) { res.status(500).json({ success: false, message: "Server error" }); }
 });
 
-// ✅ 5. USER: REGISTRATION (FIXED & SAFE)
+// ✅ 5. USER: REGISTRATION
 app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'images', maxCount: 10 }, { name: 'paymentScreenshot', maxCount: 1 }]), async (req, res) => {
     try {
         const { password, email, package: pkg, age } = req.body;
@@ -313,9 +286,9 @@ app.post(['/api/users/register', '/users/register'], upload.fields([{ name: 'ima
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Safe File Handling
-        const userImages = (req.files && req.files['images']) ? req.files['images'].map(f => f.filename) : [];
-        const screenshot = (req.files && req.files['paymentScreenshot']) ? req.files['paymentScreenshot'][0].filename : null;
+        // Cloudinary URLs extracted from middleware
+        const userImages = (req.files && req.files['images']) ? req.files['images'].map(f => f.path) : [];
+        const screenshot = (req.files && req.files['paymentScreenshot']) ? req.files['paymentScreenshot'][0].path : null;
 
         const newUser = new User({
             ...req.body,
