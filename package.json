@@ -2,10 +2,10 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "Assan Rishta Backend",
-  "main": "server.js",
+  "main": "Server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node Server.js",
+    "dev": "node Server.js"
   },
   "keywords": [],
   "author": "",
